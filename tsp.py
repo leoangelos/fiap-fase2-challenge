@@ -228,8 +228,8 @@ while executando:
         pai1, pai2 = random.choices(populacao, weights=probabilidade, k=2)
 
         # filho1 = order_crossover(pai1, pai2)
-        filho1 = order_crossover(pai1, pai1)
-        filho2 = order_crossover(pai2, pai2)
+        filho1 = order_crossover(pai1, pai2)
+        filho2 = order_crossover(pai2, pai1)
 
         filho1 = mutate(filho1, PROBABILIDADE_MUTACAO)
         filho2 = mutate(filho2, PROBABILIDADE_MUTACAO)

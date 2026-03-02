@@ -23,10 +23,11 @@ DESLOCAMENTO_X_GRAFICO = 450
 N_CIDADES = 15
 TAMANHO_POPULACAO = 100
 N_GERACOES = None
-PROBABILIDADE_MUTACAO = 0.5
+PROBABILIDADE_MUTACAO = 0.6
 GERACOES_SEM_MELHORA_PARA_PARAR = 800  # Encerra se não melhorar após N gerações
 N_VEICULOS = 3  # Número de veículos
-HEURISTICA = 1  # 1 = Vizinho Mais Próximo | 2 = Convex Hull
+HEURISTICA = 2  # 1 = Vizinho Mais Próximo | 2 = Convex Hull
+PESO_BALANCEAMENTO = 0.2  # Penalidade por desbalanceamento entre rotas
 
 # Definição de cores
 BRANCO = (255, 255, 255)
@@ -86,24 +87,32 @@ def dividir_rota(cromossomo, n_veiculos):
     return rotas
 
 
-def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos):
-    """Calcula o fitness total do mTSP: soma das distâncias de todos os veículos.
-    Cada veículo faz: depósito → cidades atribuídas → depósito."""
+def calcular_distancia_rota(rota, deposito):
+    """Calcula a distância de uma sub-rota: depósito → cidades → depósito."""
+    if len(rota) == 0:
+        return 0
+    dist = distancia_euclidiana(deposito, rota[0])
+    for i in range(len(rota) - 1):
+        dist += distancia_euclidiana(rota[i], rota[i + 1])
+    dist += distancia_euclidiana(rota[-1], deposito)
+    return dist
+
+
+def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=PESO_BALANCEAMENTO):
+    """Calcula o fitness do mTSP usando abordagem minimax.
+    Minimiza a rota mais longa + fração da distância total.
+    fitness = max(distancias) + peso * distancia_total"""
     rotas = dividir_rota(cromossomo, n_veiculos)
-    distancia_total = 0
+    distancias = [calcular_distancia_rota(rota, deposito) for rota in rotas]
 
-    for rota in rotas:
-        if len(rota) == 0:
-            continue
-        # Depósito → primeira cidade
-        distancia_total += distancia_euclidiana(deposito, rota[0])
-        # Percurso entre cidades
-        for i in range(len(rota) - 1):
-            distancia_total += distancia_euclidiana(rota[i], rota[i + 1])
-        # Última cidade → depósito
-        distancia_total += distancia_euclidiana(rota[-1], deposito)
+    distancia_total = sum(distancias)
+    max_distancia = max(distancias) if distancias else 0
 
-    return distancia_total
+    # Minimax: prioriza reduzir a rota mais longa
+    # peso_balanceamento controla quanto a distância total importa
+    #   peso=0.0 → só minimiza a rota mais longa
+    #   peso=1.0 → igual peso entre max e total
+    return max_distancia + peso_balanceamento * distancia_total
 
 
 def distancia_euclidiana(a, b):
@@ -162,6 +171,137 @@ def insercao_envoltoria_convexa(cidades):
         rota.insert(melhor_pos, cidade)
     return rota
 # --- Fim Convex Hull ---
+
+
+# --- Operadores de Mutação Avançados para mTSP ---
+def mutacao_inversao(cromossomo):
+    """Inverte um segmento aleatório do cromossomo (movimento 2-opt)."""
+    n = len(cromossomo)
+    if n < 3:
+        return cromossomo
+    i = random.randint(0, n - 2)
+    j = random.randint(i + 1, min(i + n // 3, n - 1))  # Limita tamanho do segmento
+    novo = list(cromossomo)
+    novo[i:j+1] = reversed(novo[i:j+1])
+    return novo
+
+
+def mutacao_troca_entre_rotas(cromossomo, n_veiculos, deposito):
+    """TROCA (swap) uma cidade da rota pesada com uma da rota leve.
+    Mantém a contagem de cidades igual para preservar a divisão."""
+    rotas = dividir_rota(cromossomo, n_veiculos)
+    distancias = [calcular_distancia_rota(rota, deposito) for rota in rotas]
+
+    idx_max = distancias.index(max(distancias))
+    idx_min = distancias.index(min(distancias))
+
+    if idx_max == idx_min or len(rotas[idx_max]) <= 1 or len(rotas[idx_min]) <= 1:
+        return cromossomo
+
+    rota_pesada = list(rotas[idx_max])
+    rota_leve = list(rotas[idx_min])
+
+    # Testa todas as trocas possíveis e escolhe a melhor
+    melhor_melhoria = 0
+    melhor_i = 0
+    melhor_j = 0
+    dist_pesada_atual = distancias[idx_max]
+    dist_leve_atual = distancias[idx_min]
+    max_atual = max(dist_pesada_atual, dist_leve_atual)
+
+    for i in range(len(rota_pesada)):
+        for j in range(len(rota_leve)):
+            # Simula a troca
+            rota_p_teste = rota_pesada[:i] + [rota_leve[j]] + rota_pesada[i+1:]
+            rota_l_teste = rota_leve[:j] + [rota_pesada[i]] + rota_leve[j+1:]
+            dist_p = calcular_distancia_rota(rota_p_teste, deposito)
+            dist_l = calcular_distancia_rota(rota_l_teste, deposito)
+            max_novo = max(dist_p, dist_l)
+            melhoria = max_atual - max_novo
+            if melhoria > melhor_melhoria:
+                melhor_melhoria = melhoria
+                melhor_i = i
+                melhor_j = j
+
+    if melhor_melhoria <= 0:
+        return cromossomo
+
+    # Aplica a melhor troca no cromossomo original
+    novo = list(cromossomo)
+    # Calcula as posições absolutas no cromossomo
+    inicio_pesada = 0
+    for k in range(idx_max):
+        inicio_pesada += len(rotas[k])
+    inicio_leve = 0
+    for k in range(idx_min):
+        inicio_leve += len(rotas[k])
+
+    pos_pesada = inicio_pesada + melhor_i
+    pos_leve = inicio_leve + melhor_j
+    novo[pos_pesada], novo[pos_leve] = novo[pos_leve], novo[pos_pesada]
+    return novo
+
+
+def mutacao_or_opt(cromossomo):
+    """Move 1-3 cidades consecutivas para outra posição."""
+    n = len(cromossomo)
+    if n < 4:
+        return cromossomo
+    novo = list(cromossomo)
+    tamanho_seg = random.randint(1, min(3, n // 2))
+    i = random.randint(0, n - tamanho_seg)
+    segmento = novo[i:i + tamanho_seg]
+    del novo[i:i + tamanho_seg]
+    j = random.randint(0, len(novo))
+    for k, cidade in enumerate(segmento):
+        novo.insert(j + k, cidade)
+    return novo
+
+
+def mutacao_mtsp(cromossomo, probabilidade_mutacao, n_veiculos, deposito):
+    """Aplica um operador de mutação aleatório com a probabilidade dada."""
+    if random.random() >= probabilidade_mutacao:
+        return cromossomo
+
+    operador = random.random()
+    if operador < 0.3:
+        return mutacao_inversao(cromossomo)
+    elif operador < 0.6:
+        return mutacao_troca_entre_rotas(cromossomo, n_veiculos, deposito)
+    elif operador < 0.85:
+        return mutacao_or_opt(cromossomo)
+    else:
+        # Mutação simples original (swap adjacente)
+        return mutate(cromossomo, 1.0)
+
+
+# --- Refinamento 2-opt ---
+def dois_opt(rota, deposito):
+    """Aplica 2-opt numa sub-rota para reduzir distância."""
+    if len(rota) < 3:
+        return rota
+    melhorou = True
+    melhor_rota = list(rota)
+    while melhorou:
+        melhorou = False
+        for i in range(len(melhor_rota) - 1):
+            for j in range(i + 2, len(melhor_rota)):
+                nova_rota = melhor_rota[:i] + melhor_rota[i:j+1][::-1] + melhor_rota[j+1:]
+                if calcular_distancia_rota(nova_rota, deposito) < calcular_distancia_rota(melhor_rota, deposito):
+                    melhor_rota = nova_rota
+                    melhorou = True
+    return melhor_rota
+
+
+def aplicar_2opt_mtsp(cromossomo, deposito, n_veiculos):
+    """Aplica 2-opt em cada sub-rota do cromossomo."""
+    rotas = dividir_rota(cromossomo, n_veiculos)
+    rotas_otimizadas = [dois_opt(rota, deposito) for rota in rotas]
+    novo_cromossomo = []
+    for rota in rotas_otimizadas:
+        novo_cromossomo.extend(rota)
+    return novo_cromossomo
+# --- Fim 2-opt ---
 
 
 # --- Heurística do Vizinho Mais Próximo adaptada para mTSP ---
@@ -297,7 +437,13 @@ while executando:
         print(f"\nParada automática: {GERACOES_SEM_MELHORA_PARA_PARAR} gerações sem melhora.")
         executando = False
 
-    nova_populacao = [populacao[0]]  # Manter o melhor indivíduo: ELITISMO
+    # Elitismo: manter os top 3
+    nova_populacao = populacao[:3]
+
+    # Aplicar 2-opt periodicamente no melhor indivíduo
+    if geracao % 50 == 0:
+        cromossomo_otimizado = aplicar_2opt_mtsp(populacao[0], DEPOSITO, N_VEICULOS)
+        nova_populacao[0] = cromossomo_otimizado
 
     while len(nova_populacao) < TAMANHO_POPULACAO:
 
@@ -305,12 +451,13 @@ while executando:
         probabilidade = 1 / np.array(fitness_populacao)
         pai1, pai2 = random.choices(populacao, weights=probabilidade, k=2)
 
-        # crossover e mutação
-        filho1 = order_crossover(pai1, pai1)
-        filho2 = order_crossover(pai2, pai2)
+        # crossover (corrigido: pai1 × pai2 em vez de pai × ele mesmo)
+        filho1 = order_crossover(pai1, pai2)
+        filho2 = order_crossover(pai2, pai1)
 
-        filho1 = mutate(filho1, PROBABILIDADE_MUTACAO)
-        filho2 = mutate(filho2, PROBABILIDADE_MUTACAO)
+        # mutação avançada para mTSP
+        filho1 = mutacao_mtsp(filho1, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
+        filho2 = mutacao_mtsp(filho2, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
 
         nova_populacao.append(filho1)
         nova_populacao.append(filho2)
@@ -351,14 +498,92 @@ if salvar:
 
 # Imprimir resumo das rotas
 print(f"\n=== Resumo mTSP ({N_VEICULOS} veículos) ===")
+distancias_finais = []
 for idx, rota in enumerate(rotas_finais):
-    dist = distancia_euclidiana(DEPOSITO, rota[0]) if rota else 0
-    for i in range(len(rota) - 1):
-        dist += distancia_euclidiana(rota[i], rota[i + 1])
-    if rota:
-        dist += distancia_euclidiana(rota[-1], DEPOSITO)
+    dist = calcular_distancia_rota(rota, DEPOSITO)
+    distancias_finais.append(dist)
     print(f"Veículo {idx + 1}: {len(rota)} cidades, distância = {round(dist, 2)}")
-print(f"Distância total: {round(melhor_fitness_final, 2)}")
+distancia_total_real = sum(distancias_finais)
+media_dist = distancia_total_real / len(distancias_finais)
+desvio_final = (sum((d - media_dist)**2 for d in distancias_finais) / len(distancias_finais)) ** 0.5
+print(f"Distância total: {round(distancia_total_real, 2)}")
+print(f"Desvio padrão entre rotas: {round(desvio_final, 2)}")
+print(f"Balanço: {round(min(distancias_finais), 2)} - {round(max(distancias_finais), 2)} (diferença: {round(max(distancias_finais) - min(distancias_finais), 2)})")
+
+# === Agente OpenAI - Análise das Rotas ===
+print("\n=== Enviando resultados para o agente ChatGPT... ===\n")
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    print("ERRO: OPENAI_API_KEY não encontrada no arquivo .env")
+else:
+    client = OpenAI(api_key=api_key)
+
+    # Montar dados das rotas com coordenadas originais do benchmark ATT48
+    descricao_rotas = ""
+    for idx, rota in enumerate(rotas_finais):
+        dist = calcular_distancia_rota(rota, DEPOSITO)
+        descricao_rotas += f"\n### Veículo {idx + 1} ({len(rota)} cidades, distância: {round(dist, 2)})\n"
+        descricao_rotas += f"Trajeto: Depósito → "
+        cidades_rota = []
+        for cidade in rota:
+            # Encontrar o índice original da cidade no benchmark
+            idx_cidade = localizacoes_cidades.index(cidade)
+            coord_original = att_48_cities_locations[idx_cidade]
+            cidades_rota.append(f"Cidade {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
+        descricao_rotas += " → ".join(cidades_rota)
+        descricao_rotas += " → Depósito\n"
+
+    prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
+Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
+
+## Dados do Problema
+- Benchmark: ATT48 (48 hospitais)
+- Número de veículos: {N_VEICULOS}
+- Depósito (ponto de partida/chegada): Depósito do Hospital 1 ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
+- Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}
+- Gerações: {geracao}
+- Fitness (minimax): {round(melhor_fitness_final, 2)}
+
+## Resultados das Rotas
+{descricao_rotas}
+
+## Estatísticas
+- Distância total: {round(distancia_total_real, 2)}
+- Desvio padrão entre rotas: {round(desvio_final, 2)}
+- Diferença entre maior e menor rota: {round(max(distancias_finais) - min(distancias_finais), 2)}
+
+## Instruções
+1. Descreva o trajeto de cada veículo de forma clara e objetiva
+2. Analise o balanceamento das rotas (distâncias dos veículos estão equilibradas?)
+3. Dê uma nota de 1 a 10 para o balanceamento
+4. Sugira possíveis melhorias
+
+Responda em português brasileiro."""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Você é um analista de logística especializado em otimização de rotas de veículos."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        resposta = response.choices[0].message.content
+        print("=" * 60)
+        print("ANÁLISE DO AGENTE ChatGPT")
+        print("=" * 60)
+        print(resposta)
+        print("=" * 60)
+    except Exception as e:
+        print(f"Erro ao chamar a API OpenAI: {e}")
 
 # encerrar programa
 pygame.quit()
