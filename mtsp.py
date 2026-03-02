@@ -1,3 +1,24 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║          ALGORITMO GENÉTICO PARA O PROBLEMA DO CAIXEIRO VIAJANTE           ║
+# ║              MÚLTIPLO (mTSP - multiple Travelling Salesman Problem)        ║
+# ║                                                                            ║
+# ║  Codificação Combinatória: Cada cromossomo é uma permutação das cidades    ║
+# ║  (sem repetição), dividida em N sub-rotas para N veículos.                 ║
+# ║  Codificação Híbrida: combina permutação (ordem das cidades) com partição  ║
+# ║  (divisão equilibrada entre veículos).                                     ║
+# ║                                                                            ║
+# ║  Pipeline do AG:                                                           ║
+# ║    1. Gerar População Inicial (heurística ou aleatória)                    ║
+# ║    2. Avaliar Aptidão (Fitness)                                            ║
+# ║    3. Loop evolutivo:                                                      ║
+# ║       a. Validar condição de término                                       ║
+# ║       b. Seleção dos pais                                                  ║
+# ║       c. Cruzamento (crossover)                                            ║
+# ║       d. Mutação                                                           ║
+# ║       e. Substituição da população                                         ║
+# ║    4. Pós-processamento (rebalanceamento, 2-opt, busca local)              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
 import pygame
 from pygame.locals import *
 import random
@@ -6,28 +27,58 @@ from genetic_algorithm import mutate, order_crossover, generate_random_populatio
 from draw_functions import draw_paths, draw_plot, draw_cities
 import sys
 import json
+from datetime import datetime
 import os
 import numpy as np
 import pygame
 from benchmark_att48 import *
 
 
-# Definição de constantes
-# pygame
+# ============================================================================
+# PARÂMETROS E CONSTANTES
+# ============================================================================
+
+# Pygame (visualização)
 LARGURA, ALTURA = 800, 400
 RAIO_NO = 10
 FPS = 30
 DESLOCAMENTO_X_GRAFICO = 450
 
-# Algoritmo Genético - mTSP
+# Parâmetros do Algoritmo Genético
 N_CIDADES = 15
-TAMANHO_POPULACAO = 100
-N_GERACOES = None
-PROBABILIDADE_MUTACAO = 0.6
-GERACOES_SEM_MELHORA_PARA_PARAR = 800  # Encerra se não melhorar após N gerações
-N_VEICULOS = 3  # Número de veículos
-HEURISTICA = 2  # 1 = Vizinho Mais Próximo | 2 = Convex Hull
-PESO_BALANCEAMENTO = 0.2  # Penalidade por desbalanceamento entre rotas
+TAMANHO_POPULACAO = 100                 # Tamanho da população de cromossomos
+N_GERACOES = None                       # Sem limite fixo (usa critério de parada por convergência)
+PROBABILIDADE_MUTACAO = 0.6             # Probabilidade de mutação (intensidade: alta = explora mais)
+GERACOES_SEM_MELHORA_PARA_PARAR = 800   # Critério de convergência: para após N gerações sem melhora
+HEURISTICA = 1                          # 1 = Vizinho Mais Próximo | 2 = Convex Hull
+PESO_BALANCEAMENTO = 0.2                # Penalidade por desbalanceamento entre rotas
+
+# Objetivo de otimização
+# 'distancia' → minimiza km total percorrido (economia de combustível)
+#               Carros (600km autonomia) assumem cidades distantes,
+#               motos (300km) ficam com cidades próximas.
+# 'tempo'     → equilibra tempo de chegada entre todos os veículos
+# 'hibrido'   → combina os dois objetivos: economia de combustível + equilíbrio de tempo
+#               Ajuste ALFA_HIBRIDO: 0.0 = só distância, 1.0 = só tempo, 0.5 = balanceado
+OBJETIVO = 'distancia'
+ALFA_HIBRIDO = 0.5      # Peso do componente de TEMPO no híbrido (0.0 a 1.0)
+VELOCIDADE_REF = 100    # km/h — converte horas em km-equivalente para normalizar escalas
+
+# Frota Heterogênea — Tipos de Veículos
+N_CARROS = 3                            # Quantidade de carros
+N_MOTOS = 2                             # Quantidade de motos
+N_VEICULOS = N_CARROS + N_MOTOS         # Total de veículos
+
+VELOCIDADE_CARRO = 80                   # km/h
+VELOCIDADE_MOTO = 120                   # km/h
+AUTONOMIA_CARRO = 600                   # km (precisa reabastecer na base)
+AUTONOMIA_MOTO = 400                    # km (precisa reabastecer na base)
+
+# Lista de veículos: primeiros N_CARROS são carros, restante são motos
+VEICULOS = (
+    [{'tipo': 'Carro 🚗', 'velocidade': VELOCIDADE_CARRO, 'autonomia': AUTONOMIA_CARRO}] * N_CARROS +
+    [{'tipo': 'Moto 🏍️', 'velocidade': VELOCIDADE_MOTO, 'autonomia': AUTONOMIA_MOTO}] * N_MOTOS
+)
 
 # Definição de cores
 BRANCO = (255, 255, 255)
@@ -38,13 +89,22 @@ VERDE = (0, 180, 0)
 AMARELO = (200, 200, 0)
 
 # Cores para cada veículo (uma por rota)
-CORES_VEICULOS = [
-    (0, 0, 255),       # Azul
-    (0, 180, 0),       # Verde
-    (200, 130, 0),     # Laranja
-    (180, 0, 180),     # Roxo
-    (0, 180, 180),     # Ciano
-]
+def _gerar_tons_verde(n):
+    """N tons de verde interpolados de escuro a claro: (0, 80→240, 0)."""
+    if n == 1:
+        return [(0, 160, 0)]
+    return [(0, int(80 + (240 - 80) * i / (n - 1)), 0) for i in range(n)]
+
+def _gerar_tons_vermelho(n):
+    """N tons de vermelho interpolados de escuro a claro: (80→240, 0, 0)."""
+    if n == 1:
+        return [(180, 0, 0)]
+    return [(int(80 + (240 - 80) * i / (n - 1)), 0, 0) for i in range(n)]
+
+# Cores dinâmicas: carros=verdes, motos=vermelhos — funciona com qualquer quantidade
+CORES_VEICULOS = _gerar_tons_verde(N_CARROS) + _gerar_tons_vermelho(N_MOTOS)
+
+
 
 
 # Usando benchmark att48
@@ -68,7 +128,13 @@ print(f"Número de veículos: {N_VEICULOS}")
 # ----- Fim benchmark att48
 
 
-# === Funções do mTSP ===
+# ============================================================================
+# ETAPA 1 — CODIFICAÇÃO COMBINATÓRIA (Representação do Cromossomo)
+# ============================================================================
+# O cromossomo é uma permutação de todas as cidades (sem repetição).
+# Para o mTSP, essa permutação é dividida em N sub-rotas (uma por veículo).
+# Cada sub-rota parte do depósito, visita suas cidades e retorna ao depósito.
+# ============================================================================
 
 def dividir_rota(cromossomo, n_veiculos):
     """Divide um cromossomo (permutação de cidades) em N sub-rotas equilibradas."""
@@ -98,26 +164,123 @@ def calcular_distancia_rota(rota, deposito):
     return dist
 
 
-def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=PESO_BALANCEAMENTO):
-    """Calcula o fitness do mTSP usando abordagem minimax.
-    Minimiza a rota mais longa + fração da distância total.
-    fitness = max(distancias) + peso * distancia_total"""
-    rotas = dividir_rota(cromossomo, n_veiculos)
-    distancias = [calcular_distancia_rota(rota, deposito) for rota in rotas]
-
-    distancia_total = sum(distancias)
-    max_distancia = max(distancias) if distancias else 0
-
-    # Minimax: prioriza reduzir a rota mais longa
-    # peso_balanceamento controla quanto a distância total importa
-    #   peso=0.0 → só minimiza a rota mais longa
-    #   peso=1.0 → igual peso entre max e total
-    return max_distancia + peso_balanceamento * distancia_total
-
-
 def distancia_euclidiana(a, b):
     """Distância euclidiana entre dois pontos."""
     return ((a[0] - b[0])**2 + (a[1] - b[1])**2) ** 0.5
+
+
+# ============================================================================
+# DISTÂNCIA EFETIVA COM REABASTECIMENTO
+# ============================================================================
+# Quando um veículo não tem autonomia suficiente para chegar à próxima cidade
+# E ainda retornar à base depois, ele deve voltar à base, reabastecer, e
+# então seguir para a próxima cidade. Isso aumenta a distância real percorrida.
+# ============================================================================
+
+def calcular_distancia_efetiva(rota, deposito, autonomia):
+    """Calcula distância real incluindo viagens de volta à base para reabastecer.
+    Retorna (distância_efetiva, número_de_reabastecimentos)."""
+    if not rota:
+        return 0, 0
+
+    dist_total = 0
+    combustivel = autonomia
+    reabastecimentos = 0
+    pos_atual = deposito
+
+    for cidade in rota:
+        dist_ate_cidade = distancia_euclidiana(pos_atual, cidade)
+        # Preciso chegar na cidade E ter combustível pra voltar à base depois
+        dist_cidade_base = distancia_euclidiana(cidade, deposito)
+
+        if combustivel < dist_ate_cidade + dist_cidade_base:
+            # Não dá: voltar à base para reabastecer
+            dist_volta = distancia_euclidiana(pos_atual, deposito)
+            dist_total += dist_volta     # Volta à base
+            combustivel = autonomia       # Tanque cheio
+            reabastecimentos += 1
+            pos_atual = deposito
+            dist_ate_cidade = distancia_euclidiana(deposito, cidade)
+
+        dist_total += dist_ate_cidade
+        combustivel -= dist_ate_cidade
+        pos_atual = cidade
+
+    # Volta final à base
+    dist_total += distancia_euclidiana(pos_atual, deposito)
+    return dist_total, reabastecimentos
+
+
+def calcular_tempo_rota(rota, deposito, veiculo):
+    """Calcula o tempo (horas) de uma rota considerando autonomia e velocidade."""
+    dist_efetiva, reab = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'])
+    tempo = dist_efetiva / veiculo['velocidade']
+    return tempo, dist_efetiva, reab
+
+
+def calcular_tempos_rotas(rotas, deposito):
+    """Calcula tempos, distâncias efetivas e reabastecimentos de todas as rotas.
+    Retorna (tempos, dist_efetivas, reabastecimentos) — uma lista por veículo."""
+    tempos = []
+    dist_efetivas = []
+    reabs = []
+    for i, rota in enumerate(rotas):
+        veiculo = VEICULOS[i]
+        tempo, dist_ef, reab = calcular_tempo_rota(rota, deposito, veiculo)
+        tempos.append(tempo)
+        dist_efetivas.append(dist_ef)
+        reabs.append(reab)
+    return tempos, dist_efetivas, reabs
+
+
+# ============================================================================
+# ETAPA 2 — FUNÇÃO DE APTIDÃO (FITNESS)
+# ============================================================================
+# O fitness avalia a DISTÂNCIA EFETIVA percorrida (km), não o tempo.
+# Distância efetiva inclui os desvios de reabastecimento à base quando
+# o veículo não tem autonomia suficiente para a próxima cidade.
+#
+# fitness = max(dist_ef) + peso × total_dist_ef
+#   - peso=0.0 → só minimiza a rota mais longa (minimax)
+#   - peso>0.0 → também penaliza o total percorrido por todos
+#
+# Esse objetivo incentiva carros (600km autonomia) a cobrirem cidades
+# distantes (menos desvios de reabastecimento) e motos (300km) a
+# cobrirem cidades próximas — maximizando a eficiência de combustível.
+# ============================================================================
+
+def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=PESO_BALANCEAMENTO):
+    """Calcula o fitness do mTSP conforme o OBJETIVO configurado.
+
+    OBJETIVO='distancia' → fitness = max(dist_ef) + peso * total_dist_ef
+    OBJETIVO='tempo'     → fitness = max(tempo) + peso * total_tempo
+    OBJETIVO='hibrido'   → combina as duas métricas normalizadas por VELOCIDADE_REF:
+                           dist_component  (km)
+                           tempo_component (horas * VELOCIDADE_REF → km-equivalente)
+                           fitness = (1 - ALFA) * dist_component + ALFA * tempo_component
+    """
+    rotas = dividir_rota(cromossomo, n_veiculos)
+    dist_efetivas = []
+    tempos = []
+    for idx, rota in enumerate(rotas):
+        veiculo = VEICULOS[idx]
+        dist_ef, _ = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'])
+        tempo, _, _ = calcular_tempo_rota(rota, deposito, veiculo)
+        dist_efetivas.append(dist_ef)
+        tempos.append(tempo)
+
+    if OBJETIVO == 'tempo':
+        return max(tempos) + peso_balanceamento * sum(tempos)
+
+    elif OBJETIVO == 'hibrido':
+        # Componente de distância (km)
+        dist_component = max(dist_efetivas) + peso_balanceamento * sum(dist_efetivas)
+        # Componente de tempo convertido para km-equivalente (h × km/h)
+        tempo_component = (max(tempos) + peso_balanceamento * sum(tempos)) * VELOCIDADE_REF
+        return (1 - ALFA_HIBRIDO) * dist_component + ALFA_HIBRIDO * tempo_component
+
+    else:  # 'distancia'
+        return max(dist_efetivas) + peso_balanceamento * sum(dist_efetivas)
 
 
 def ordenar_populacao_mtsp(populacao, deposito, n_veiculos):
@@ -129,6 +292,19 @@ def ordenar_populacao_mtsp(populacao, deposito, n_veiculos):
     fitness_ordenado = [p[1] for p in pares]
     return populacao_ordenada, fitness_ordenado
 
+
+# ============================================================================
+# ETAPA 3 — GERAR POPULAÇÃO INICIAL
+# ============================================================================
+# A população pode ser gerada de três formas:
+#   a) Aleatória — permutações aleatórias das cidades
+#   b) Heurística — soluções construídas inteligentemente (melhor ponto de partida)
+#      - Vizinho Mais Próximo: começa numa cidade e sempre vai à mais próxima
+#      - Convex Hull: constrói rota pelos pontos externos, e insere internos
+#   c) Soluções conhecidas — carregar soluções de execuções anteriores
+#
+# Combinar heurísticas com aleatórias dá diversidade genética + qualidade.
+# ============================================================================
 
 # --- Heurística da Convex Hull adaptada para mTSP ---
 def produto_vetorial(O, A, B):
@@ -172,6 +348,23 @@ def insercao_envoltoria_convexa(cidades):
     return rota
 # --- Fim Convex Hull ---
 
+
+# ============================================================================
+# ETAPA 6 — MUTAÇÃO
+# ============================================================================
+# A mutação introduz diversidade genética na população, explorando combinações
+# que o cruzamento sozinho não alcançaria. Dois aspectos chave:
+#   - Probabilidade: com que frequência a mutação acontece (ex: 60%)
+#   - Intensidade: quão forte é a alteração no cromossomo
+#     · Forte: inverte segmentos, move blocos (inversão, or-opt)
+#     · Fraca: troca apenas dois genes adjacentes (swap)
+#
+# Para mTSP, temos 4 operadores especializados:
+#   1. Inversão de segmento (30%) — reverte trecho do cromossomo (2-opt move)
+#   2. Troca entre rotas (30%) — swap entre rota pesada ↔ rota leve
+#   3. Or-opt (25%) — move 1-3 cidades consecutivas para outra posição
+#   4. Swap adjacente (15%) — mutação clássica simples
+# ============================================================================
 
 # --- Operadores de Mutação Avançados para mTSP ---
 def mutacao_inversao(cromossomo):
@@ -304,9 +497,11 @@ def aplicar_2opt_mtsp(cromossomo, deposito, n_veiculos):
 # --- Fim 2-opt ---
 
 
-# --- Heurística do Vizinho Mais Próximo adaptada para mTSP ---
+# --- Heurística do Vizinho Mais Próximo (Greedy / Gulosa) ---
+# Estratégia Gulosa: a cada passo, escolhe a cidade não visitada mais próxima.
+# Vantagem: rápida e gera soluções razoáveis. Desvantagem: pode ficar presa em ótimos locais.
 def vizinho_mais_proximo(cidades, indice_inicial=0):
-    #Gera uma rota usando a heurística de vizinho mais próximo.
+    """Gera uma rota usando a heurística de vizinho mais próximo."""
     nao_visitadas = list(cidades)
     atual = nao_visitadas.pop(indice_inicial)
     rota = [atual]
@@ -319,7 +514,8 @@ def vizinho_mais_proximo(cidades, indice_inicial=0):
 # --- Fim Vizinho Mais Próximo ---
 
 
-# === Gerar População Aleatória (sem depósito) ===
+# --- Geração Aleatória (Diversidade Genética) ---
+# Gera permutações totalmente aleatórias para garantir diversidade na população.
 def gerar_populacao_aleatoria_mtsp(cidades, tamanho_populacao):
     """Gera população aleatória de permutações das cidades (sem o depósito)."""
     populacao = []
@@ -330,9 +526,10 @@ def gerar_populacao_aleatoria_mtsp(cidades, tamanho_populacao):
     return populacao
 
 
-# === Criar População Inicial baseada na HEURISTICA escolhida ===
+# --- EXECUÇÃO: Criar População Inicial baseada na HEURÍSTICA escolhida ---
+# Mistura soluções heurísticas (qualidade) + aleatórias (diversidade)
 if HEURISTICA == 1:
-    # Vizinho Mais Próximo
+    # Vizinho Mais Próximo — gera várias soluções começando de cidades diferentes
     print("Heurística selecionada: Vizinho Mais Próximo")
     solucoes_vmp = []
     for i in range(min(len(cidades_sem_deposito), TAMANHO_POPULACAO)):
@@ -342,17 +539,19 @@ if HEURISTICA == 1:
     populacao = solucoes_vmp + solucoes_aleatorias
 
 elif HEURISTICA == 2:
-    # Convex Hull
+    # Convex Hull — 1 solução heurística + (N-1) aleatórias
     print("Heurística selecionada: Convex Hull")
     solucao_envoltoria = insercao_envoltoria_convexa(cidades_sem_deposito)
     populacao = [solucao_envoltoria] + gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, TAMANHO_POPULACAO - 1)
 
 else:
+    # Totalmente aleatória
     print("Heurística inválida! Usando população aleatória.")
     populacao = gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, TAMANHO_POPULACAO)
 
 fitness_inicial = calcular_fitness_mtsp(populacao[0], DEPOSITO, N_VEICULOS)
 print(f"Fitness da melhor solução inicial (mTSP): {round(fitness_inicial, 2)}")
+# --- Fim da Geração da População Inicial ---
 
 
 # Inicializar Pygame
@@ -363,12 +562,22 @@ relogio = pygame.time.Clock()
 contador_geracoes = itertools.count(start=1)  # Iniciar o contador em 1
 
 melhores_fitness = []
-melhores_solucoes = []
 melhor_fitness_global = float('inf')
+melhor_solucao_global = None  # Guardamos apenas o melhor global (nunca regride)
 geracoes_sem_melhora = 0
 
 
-# Loop principal
+# ============================================================================
+# LOOP EVOLUTIVO PRINCIPAL DO ALGORITMO GENÉTICO
+# ============================================================================
+# A cada geração, o AG executa o ciclo completo:
+#   1. Avaliar Aptidão (Fitness) — calcula quão boa é cada solução
+#   2. Validar Condição de Término — verifica convergência ou nº máx gerações
+#   3. Seleção — escolhe os pais com base na aptidão (roleta proporcional)
+#   4. Cruzamento (Crossover) — combina pais para gerar filhos (OX1)
+#   5. Mutação — introduz variações aleatórias para explorar novas soluções
+#   6. Substituição da População — substitui a geração anterior pela nova
+# ============================================================================
 executando = True
 while executando:
     for evento in pygame.event.get():
@@ -382,18 +591,29 @@ while executando:
 
     tela.fill(BRANCO)
 
-    # Calcular fitness e ordenar população
+    # ------------------------------------------------------------------
+    # ETAPA 2 (no loop) — AVALIAR APTIDÃO (FITNESS)
+    # ------------------------------------------------------------------
+    # Calcula o fitness de todos os cromossomos e ordena do melhor ao pior.
+    # Função de Fitness: somar distâncias de todas as sub-rotas + penalidade
+    # de balanceamento (minimax). Menor fitness = melhor solução.
+    # ------------------------------------------------------------------
     populacao, fitness_populacao = ordenar_populacao_mtsp(populacao, DEPOSITO, N_VEICULOS)
 
     melhor_fitness = fitness_populacao[0]
     melhor_solucao = populacao[0]
 
     melhores_fitness.append(melhor_fitness)
-    melhores_solucoes.append(melhor_solucao)
 
     # Desenhar gráfico de convergência
+    if OBJETIVO == 'distancia':
+        label_fitness = "Distância Efetiva (km)"
+    elif OBJETIVO == 'tempo':
+        label_fitness = "Tempo (h)"
+    else:
+        label_fitness = f"Híbrido (α={ALFA_HIBRIDO})"
     draw_plot(tela, list(range(len(melhores_fitness))),
-              melhores_fitness, y_label="Fitness - Distância (pxls)")
+              melhores_fitness, y_label=f"Fitness - {label_fitness}")
 
     # Desenhar cidades e depósito
     draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
@@ -425,55 +645,114 @@ while executando:
 
     print(f"Geração {geracao}: Melhor fitness = {round(melhor_fitness, 2)}")
 
-    # Verificar se houve melhora
+    # ------------------------------------------------------------------
+    # ETAPA 3 — VALIDAR CONDIÇÃO DE TÉRMINO DO FLUXO
+    # ------------------------------------------------------------------
+    # Critérios implementados:
+    #   a) Número máximo de gerações: N_GERACOES (não definido = sem limite)
+    #   b) Convergência: para se não melhora após N gerações consecutivas
+    #   c) Alcance da solução ótima: se fitness ≤ threshold (não usado aqui)
+    # O critério principal usado é a CONVERGÊNCIA (estagnação).
+    # ------------------------------------------------------------------
     if melhor_fitness < melhor_fitness_global:
+        # Nova melhor solução global encontrada
         melhor_fitness_global = melhor_fitness
+        melhor_solucao_global = melhor_solucao[:]  # Cópia da melhor solução
         geracoes_sem_melhora = 0
     else:
         geracoes_sem_melhora += 1
 
-    # Parada automática por estagnação
+    # Parada por convergência: N gerações sem melhora
     if geracoes_sem_melhora >= GERACOES_SEM_MELHORA_PARA_PARAR:
         print(f"\nParada automática: {GERACOES_SEM_MELHORA_PARA_PARAR} gerações sem melhora.")
         executando = False
 
-    # Elitismo: manter os top 3
+    # ------------------------------------------------------------------
+    # ETAPA 7 — SUBSTITUIÇÃO DA POPULAÇÃO (Elitismo)
+    # ------------------------------------------------------------------
+    # Elitismo: os 3 melhores indivíduos passam direto para a próxima
+    # geração, garantindo que boas soluções nunca se percam.
+    # O restante da população é preenchido por novos filhos.
+    # ------------------------------------------------------------------
+    # Elitismo: os 3 melhores passam direto (sem modificação)
+    # Nota: 2-opt periódico foi removido — ele otimiza por distância pura,
+    # ignorando reabastecimento, causando regressão no fitness baseado em tempo.
     nova_populacao = populacao[:3]
-
-    # Aplicar 2-opt periodicamente no melhor indivíduo
-    if geracao % 50 == 0:
-        cromossomo_otimizado = aplicar_2opt_mtsp(populacao[0], DEPOSITO, N_VEICULOS)
-        nova_populacao[0] = cromossomo_otimizado
 
     while len(nova_populacao) < TAMANHO_POPULACAO:
 
-        # seleção baseada na probabilidade do fitness
+        # --------------------------------------------------------------
+        # ETAPA 4 — SELEÇÃO DOS PAIS
+        # --------------------------------------------------------------
+        # Método: Roleta / Proporcional ao Fitness
+        # Indivíduos com menor distância (melhor fitness) têm MAIOR
+        # probabilidade de serem selecionados como pais.
+        # Probabilidade = 1/fitness (inversamente proporcional).
+        # Outros métodos possíveis: Torneio, Ranking.
+        # --------------------------------------------------------------
         probabilidade = 1 / np.array(fitness_populacao)
         pai1, pai2 = random.choices(populacao, weights=probabilidade, k=2)
 
-        # crossover (corrigido: pai1 × pai2 em vez de pai × ele mesmo)
+        # --------------------------------------------------------------
+        # ETAPA 5 — CRUZAMENTO (CROSSOVER)
+        # --------------------------------------------------------------
+        # Método: Order Crossover (OX1) — Codificação Combinatória
+        # Preserva a ordem relativa dos genes dos pais nos filhos,
+        # sem repetir cidades (essencial para o PCV, onde o caixeiro
+        # não pode voltar a uma cidade já visitada).
+        #
+        # Funcionamento:
+        #   1. Seleciona um segmento aleatório do pai1 → copia para filho
+        #   2. Preenche o resto com as cidades do pai2, na ordem original,
+        #      pulando as que já estão no segmento copiado.
+        # Resultado: filho herda a sequência local do pai1 e a ordem
+        # global do pai2.
+        # --------------------------------------------------------------
         filho1 = order_crossover(pai1, pai2)
         filho2 = order_crossover(pai2, pai1)
 
-        # mutação avançada para mTSP
+        # --------------------------------------------------------------
+        # ETAPA 6 — MUTAÇÃO
+        # --------------------------------------------------------------
+        # Adiciona combinações que não foram exploradas pelo cruzamento.
+        # Probabilidade = 60% (alta, para explorar bastante o espaço)
+        # Intensidade variável (4 operadores, de forte a fraca).
+        # --------------------------------------------------------------
         filho1 = mutacao_mtsp(filho1, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
         filho2 = mutacao_mtsp(filho2, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
 
         nova_populacao.append(filho1)
         nova_populacao.append(filho2)
 
+    # ------------------------------------------------------------------
+    # Substituição: a nova geração substitui a anterior por completo
+    # (exceto os 3 elitistas que foram preservados no início).
+    # ------------------------------------------------------------------
     populacao = nova_populacao
 
     pygame.display.flip()
     relogio.tick(FPS)
 
 
-# Salvar o melhor indivíduo em arquivo se for melhor que o salvo anteriormente
-ARQUIVO_MELHOR_SOLUCAO = "melhor_solucao_mtsp.json"
+# ============================================================================
+# ETAPA 9 — RESULTADOS E PERSISTÊNCIA
+# ============================================================================
+# Usar diretamente o melhor resultado do AG (sem pós-processamento).
+# Salvar em JSON, capturar screenshot e gerar relatório via agente ChatGPT.
+# ============================================================================
 
-melhor_fitness_final = calcular_fitness_mtsp(melhores_solucoes[-1], DEPOSITO, N_VEICULOS)
-melhor_solucao_final = melhores_solucoes[-1]
+# Construir rotas finais a partir do melhor indivíduo do AG
+melhor_solucao_final = melhor_solucao_global  # Melhor visto em toda a execução
 rotas_finais = dividir_rota(melhor_solucao_final, N_VEICULOS)
+rotas_finais = [list(rota) for rota in rotas_finais]
+distancias_final = [calcular_distancia_rota(r, DEPOSITO) for r in rotas_finais]
+tempos_final, dist_ef_final, reab_final = calcular_tempos_rotas(rotas_finais, DEPOSITO)
+melhor_fitness_final = sum(dist_ef_final)
+
+# Salvar o melhor indivíduo em arquivo
+os.makedirs("rotas", exist_ok=True)
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+ARQUIVO_MELHOR_SOLUCAO = f"rotas/melhor_solucao_mtsp_{timestamp}.json"
 
 salvar = True
 if os.path.exists(ARQUIVO_MELHOR_SOLUCAO):
@@ -486,31 +765,73 @@ if os.path.exists(ARQUIVO_MELHOR_SOLUCAO):
 
 if salvar:
     dados = {
+        'timestamp': timestamp,
         'fitness': melhor_fitness_final,
         'n_veiculos': N_VEICULOS,
         'deposito': DEPOSITO,
         'rotas': [list(rota) for rota in rotas_finais],
+        'cidades_por_rota': [len(rota) for rota in rotas_finais],
+        'distancias_por_rota': [round(calcular_distancia_rota(r, DEPOSITO), 2) for r in rotas_finais],
         'numero_geracoes': geracao
     }
     with open(ARQUIVO_MELHOR_SOLUCAO, 'w') as f:
         json.dump(dados, f, indent=2)
     print(f"Nova melhor solução mTSP salva! Fitness: {round(melhor_fitness_final, 2)} em {geracao} gerações.")
 
-# Imprimir resumo das rotas
-print(f"\n=== Resumo mTSP ({N_VEICULOS} veículos) ===")
-distancias_finais = []
+# === Capturar screenshot do resultado final ===
+# Redesenhar a tela com as rotas rebalanceadas
+tela.fill(BRANCO)
+draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
+pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
+pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
+
 for idx, rota in enumerate(rotas_finais):
-    dist = calcular_distancia_rota(rota, DEPOSITO)
-    distancias_finais.append(dist)
-    print(f"Veículo {idx + 1}: {len(rota)} cidades, distância = {round(dist, 2)}")
-distancia_total_real = sum(distancias_finais)
-media_dist = distancia_total_real / len(distancias_finais)
-desvio_final = (sum((d - media_dist)**2 for d in distancias_finais) / len(distancias_finais)) ** 0.5
-print(f"Distância total: {round(distancia_total_real, 2)}")
-print(f"Desvio padrão entre rotas: {round(desvio_final, 2)}")
-print(f"Balanço: {round(min(distancias_finais), 2)} - {round(max(distancias_finais), 2)} (diferença: {round(max(distancias_finais) - min(distancias_finais), 2)})")
+    if len(rota) < 2:
+        if len(rota) == 1:
+            pygame.draw.line(tela, CORES_VEICULOS[idx % len(CORES_VEICULOS)], DEPOSITO, rota[0], 3)
+            pygame.draw.line(tela, CORES_VEICULOS[idx % len(CORES_VEICULOS)], rota[0], DEPOSITO, 3)
+        continue
+    cor = CORES_VEICULOS[idx % len(CORES_VEICULOS)]
+    rota_completa = [DEPOSITO] + list(rota) + [DEPOSITO]
+    draw_paths(tela, rota_completa, cor, width=3)
+
+# Adicionar texto com informações na tela
+fonte = pygame.font.SysFont('Arial', 14)
+for idx, rota in enumerate(rotas_finais):
+    v = VEICULOS[idx]
+    cor = CORES_VEICULOS[idx % len(CORES_VEICULOS)]
+    texto = fonte.render(f"{v['tipo']} V{idx+1}: {len(rota)} cid, {round(dist_ef_final[idx],1)}km, {round(tempos_final[idx],2)}h, {reab_final[idx]}⛽", True, cor)
+    tela.blit(texto, (10, 10 + idx * 20))
+texto_total = fonte.render(f"Total: {round(melhor_fitness_final, 2)}km | Dif tempo: {round(max(tempos_final) - min(tempos_final), 2)}h", True, PRETO)
+tela.blit(texto_total, (10, 10 + N_VEICULOS * 20))
+
+pygame.display.flip()
+
+# Salvar screenshot
+nome_screenshot = f"rotas/resultado_mtsp_{timestamp}.png"
+pygame.image.save(tela, nome_screenshot)
+print(f"Screenshot salvo: {nome_screenshot}")
+
+# Imprimir resumo das rotas
+print(f"\n=== Resumo mTSP ({N_VEICULOS} veículos: {N_CARROS} carros + {N_MOTOS} motos) ===")
+tempos_resumo, dist_ef_resumo, reab_resumo = calcular_tempos_rotas(rotas_finais, DEPOSITO)
+for idx, rota in enumerate(rotas_finais):
+    v = VEICULOS[idx]
+    print(f"{v['tipo']} V{idx+1}: {len(rota)} cidades, dist_efetiva={round(dist_ef_resumo[idx], 2)}km, "
+          f"tempo={round(tempos_resumo[idx], 2)}h, reabastecimentos={reab_resumo[idx]}")
+distancia_total_real = sum(dist_ef_resumo)
+tempo_total = sum(tempos_resumo)
+media_tempo = tempo_total / len(tempos_resumo)
+desvio_final = (sum((t - media_tempo)**2 for t in tempos_resumo) / len(tempos_resumo)) ** 0.5
+print(f"Distância efetiva total: {round(distancia_total_real, 2)}km")
+print(f"Tempo total: {round(tempo_total, 2)}h")
+print(f"Desvio padrão entre tempos: {round(desvio_final, 2)}h")
+print(f"Balanço tempo: {round(min(tempos_resumo), 2)}h - {round(max(tempos_resumo), 2)}h (diferença: {round(max(tempos_resumo) - min(tempos_resumo), 2)}h)")
+print(f"Total reabastecimentos: {sum(reab_resumo)}")
 
 # === Agente OpenAI - Análise das Rotas ===
+pygame.quit()  # Fechar a tela antes da chamada à API
+
 print("\n=== Enviando resultados para o agente ChatGPT... ===\n")
 
 from dotenv import load_dotenv
@@ -524,53 +845,57 @@ if not api_key:
 else:
     client = OpenAI(api_key=api_key)
 
-    # Montar dados das rotas com coordenadas originais do benchmark ATT48
+    # Montar dados das rotas com hospitais
     descricao_rotas = ""
+    tempos_api, dist_ef_api, reab_api = calcular_tempos_rotas(rotas_finais, DEPOSITO)
     for idx, rota in enumerate(rotas_finais):
-        dist = calcular_distancia_rota(rota, DEPOSITO)
-        descricao_rotas += f"\n### Veículo {idx + 1} ({len(rota)} cidades, distância: {round(dist, 2)})\n"
-        descricao_rotas += f"Trajeto: Depósito → "
-        cidades_rota = []
-        for cidade in rota:
-            # Encontrar o índice original da cidade no benchmark
+        v = VEICULOS[idx]
+        descricao_rotas += f"\n### {v['tipo']} V{idx + 1} ({len(rota)} hospitais, dist_efetiva: {round(dist_ef_api[idx], 2)}km, "
+        descricao_rotas += f"tempo: {round(tempos_api[idx], 2)}h, reabastecimentos: {reab_api[idx]})\n"
+        descricao_rotas += f"Tipo: {v['tipo']} | Velocidade: {v['velocidade']}km/h | Autonomia: {v['autonomia']}km\n"
+        descricao_rotas += f"Trajeto: Depósito Central → "
+        hospitais_rota = []
+        for ordem, cidade in enumerate(rota):
             idx_cidade = localizacoes_cidades.index(cidade)
             coord_original = att_48_cities_locations[idx_cidade]
-            cidades_rota.append(f"Cidade {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
-        descricao_rotas += " → ".join(cidades_rota)
-        descricao_rotas += " → Depósito\n"
+            hospitais_rota.append(f"{ordem + 1}º Hospital {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
+        descricao_rotas += " → ".join(hospitais_rota)
+        descricao_rotas += " → Depósito Central\n"
 
-    prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
-Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
+    prompt = f"""Você é um coordenador de logística hospitalar responsável pela distribuição de suprimentos médicos.
 
-## Dados do Problema
-- Benchmark: ATT48 (48 hospitais)
-- Número de veículos: {N_VEICULOS}
-- Depósito (ponto de partida/chegada): Depósito do Hospital 1 ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
-- Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}
-- Gerações: {geracao}
-- Fitness (minimax): {round(melhor_fitness_final, 2)}
+## Contexto
+Uma rede de {len(localizacoes_cidades)} hospitais precisa receber reposição de suprimentos médicos.
+O Depósito Central de suprimentos fica no Hospital 1 (coordenadas: {att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]}).
+Foram designados {N_VEICULOS} veículos ({N_CARROS} carros a {VELOCIDADE_CARRO}km/h com {AUTONOMIA_CARRO}km de autonomia + {N_MOTOS} motos a {VELOCIDADE_MOTO}km/h com {AUTONOMIA_MOTO}km de autonomia).
+Veículos precisam retornar à base para reabastecer quando a autonomia é insuficiente.
+O algoritmo genético (heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}, {geracao} gerações) otimizou as rotas.
 
-## Resultados das Rotas
+## Rotas Otimizadas
 {descricao_rotas}
 
 ## Estatísticas
-- Distância total: {round(distancia_total_real, 2)}
-- Desvio padrão entre rotas: {round(desvio_final, 2)}
-- Diferença entre maior e menor rota: {round(max(distancias_finais) - min(distancias_finais), 2)}
+- Distância efetiva total: {round(distancia_total_real, 2)} km
+- Tempo total: {round(tempo_total, 2)} h
+- Desvio padrão entre tempos: {round(desvio_final, 2)} h
+- Diferença entre maior e menor tempo: {round(max(tempos_resumo) - min(tempos_resumo), 2)} h
+- Total de reabastecimentos: {sum(reab_resumo)}
 
-## Instruções
-1. Descreva o trajeto de cada veículo de forma clara e objetiva
-2. Analise o balanceamento das rotas (distâncias dos veículos estão equilibradas?)
-3. Dê uma nota de 1 a 10 para o balanceamento
-4. Sugira possíveis melhorias
+## Instruções — Crie um ROTEIRO DE ENTREGA para cada motorista:
+1. Para cada veículo, liste o roteiro passo a passo: "Saia do Depósito Central → Vá ao Hospital X → Depois ao Hospital Y → ..."
+2. Indique a ordem exata das paradas para reposição de suprimentos
+3. Informe o tipo de veículo, quantos hospitais atende, a distância efetiva, o tempo estimado e quantas paradas para reabastecimento
+4. Analise o balanceamento das cargas de trabalho entre os motoristas (por tempo, não distância)
+5. Dê uma nota de 1 a 10 para o equilíbrio das rotas
+6. Faça recomendações operacionais (horários, prioridades, alocação carro vs moto)
 
-Responda em português brasileiro."""
+Responda em português brasileiro de forma clara e objetiva, como um briefing operacional para os motoristas."""
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Você é um analista de logística especializado em otimização de rotas de veículos."},
+                {"role": "system", "content": "Você é um coordenador de logística hospitalar. Sua função é criar roteiros claros e objetivos para motoristas de veículos de reposição de suprimentos médicos em hospitais."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -586,5 +911,5 @@ Responda em português brasileiro."""
         print(f"Erro ao chamar a API OpenAI: {e}")
 
 # encerrar programa
-pygame.quit()
+#pygame.quit()
 sys.exit()
