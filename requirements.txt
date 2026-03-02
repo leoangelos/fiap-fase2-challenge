@@ -1,3 +1,8 @@
 pygame
 numpy
 matplotlib
+streamlit
+pandas
+openai
+yfinance
+python-dotenv
