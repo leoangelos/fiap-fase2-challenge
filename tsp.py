@@ -25,6 +25,7 @@ TAMANHO_POPULACAO = 100
 N_GERACOES = None
 PROBABILIDADE_MUTACAO = 0.5
 GERACOES_SEM_MELHORA_PARA_PARAR = 800  # Encerra se não melhorar após N gerações
+HEURISTICA = 2  # 1 = Vizinho Mais Próximo | 2 = Convex Hull
 
 # Definição de cores
 BRANCO = (255, 255, 255)
@@ -67,26 +68,18 @@ relogio = pygame.time.Clock()
 contador_geracoes = itertools.count(start=1)  # Iniciar o contador em 1
 
 
-# --- Heurística do Vizinho Mais Próximo --- (Foi o menos performático no att_48_cities_order)
-# def vizinho_mais_proximo(cidades, indice_inicial=0):
-#     #Gera uma rota usando a heurística de vizinho mais próximo.
-#     nao_visitadas = list(cidades)
-#     atual = nao_visitadas.pop(indice_inicial)
-#     rota = [atual]
-#     while nao_visitadas:
-#         mais_proximo = min(nao_visitadas, key=lambda cidade: (cidade[0] - atual[0])**2 + (cidade[1] - atual[1])**2)
-#         nao_visitadas.remove(mais_proximo)
-#         atual = mais_proximo
-#         rota.append(atual)
-#     return rota
-
-# solucoes_vmp = []
-# for i in range(min(len(localizacoes_cidades), TAMANHO_POPULACAO)):
-#     solucoes_vmp.append(vizinho_mais_proximo(localizacoes_cidades, indice_inicial=i))
-
-# restante = TAMANHO_POPULACAO - len(solucoes_vmp)
-# solucoes_aleatorias = generate_random_population(localizacoes_cidades, restante) if restante > 0 else []
-# populacao = solucoes_vmp + solucoes_aleatorias
+# --- Heurística do Vizinho Mais Próximo ---
+def vizinho_mais_proximo(cidades, indice_inicial=0):
+    #Gera uma rota usando a heurística de vizinho mais próximo.
+    nao_visitadas = list(cidades)
+    atual = nao_visitadas.pop(indice_inicial)
+    rota = [atual]
+    while nao_visitadas:
+        mais_proximo = min(nao_visitadas, key=lambda cidade: (cidade[0] - atual[0])**2 + (cidade[1] - atual[1])**2)
+        nao_visitadas.remove(mais_proximo)
+        atual = mais_proximo
+        rota.append(atual)
+    return rota
 # --- Fim Vizinho Mais Próximo ---
 
 
@@ -97,7 +90,7 @@ def produto_vetorial(O, A, B):
 
 
 def envoltoria_convexa(pontos):
-    #Retorna a envoltória convexa dos pontos (algoritmo de Andrew).
+    #Retorna a Convex Hull dos pontos (algoritmo de Andrew).
     pontos_ordenados = sorted(set(pontos))
     if len(pontos_ordenados) <= 1:
         return pontos_ordenados
@@ -125,8 +118,7 @@ def distancia(a, b):
 
 
 def insercao_envoltoria_convexa(cidades):
-    #Constrói uma rota começando pelos pontos externos (Envoltória Convexa)
-    #inserindo os pontos internos na posição de menor custo.
+    #Constrói uma rota começando pelos pontos externos (Convex Hull)
     envoltoria = envoltoria_convexa(cidades)
     rota = list(envoltoria)
     restantes = [c for c in cidades if c not in rota]
@@ -143,27 +135,32 @@ def insercao_envoltoria_convexa(cidades):
         rota.insert(melhor_pos, cidade)
 
     return rota
-
 # Fim - Heurística da Convex Hull
 
 
-# Início - Criar População Inicial usando heurística do Vizinho Mais Próximo
-# solucoes_vmp = []
-# for i in range(min(len(localizacoes_cidades), TAMANHO_POPULACAO)):
-#    solucoes_vmp.append(vizinho_mais_proximo(localizacoes_cidades, indice_inicial=i))
+# === Criar População Inicial baseada na HEURISTICA escolhida ===
+if HEURISTICA == 1:
+    # Vizinho Mais Próximo
+    print("Heurística selecionada: Vizinho Mais Próximo")
+    solucoes_vmp = []
+    for i in range(min(len(localizacoes_cidades), TAMANHO_POPULACAO)):
+        solucoes_vmp.append(vizinho_mais_proximo(localizacoes_cidades, indice_inicial=i))
+    restante = TAMANHO_POPULACAO - len(solucoes_vmp)
+    solucoes_aleatorias = generate_random_population(localizacoes_cidades, restante) if restante > 0 else []
+    populacao = solucoes_vmp + solucoes_aleatorias
 
-# restante = TAMANHO_POPULACAO - len(solucoes_vmp)
-# solucoes_aleatorias = generate_random_population(localizacoes_cidades, restante) if restante > 0 else []
-# populacao = solucoes_vmp + solucoes_aleatorias
-# Fim - População usando Vizinho Mais Próximo
+elif HEURISTICA == 2:
+    # Convex Hull
+    print("Heurística selecionada: Convex Hull")
+    solucao_envoltoria = insercao_envoltoria_convexa(localizacoes_cidades)
+    populacao = [solucao_envoltoria] + generate_random_population(localizacoes_cidades, TAMANHO_POPULACAO - 1)
 
-# Início - Criar População Inicial usando heurística da Convex Hull
-solucao_envoltoria = insercao_envoltoria_convexa(localizacoes_cidades)
-fitness_envoltoria = calculate_fitness(solucao_envoltoria)
-print(f"Fitness da solução inicial Envoltória Convexa: {round(fitness_envoltoria, 2)}")
+else:
+    print("Heurística inválida! Usando população aleatória.")
+    populacao = generate_random_population(localizacoes_cidades, TAMANHO_POPULACAO)
 
-populacao = [solucao_envoltoria] + generate_random_population(localizacoes_cidades, TAMANHO_POPULACAO - 1)
-# Fim - Criar População Inicial usando Convex Hull
+fitness_inicial = calculate_fitness(populacao[0])
+print(f"Fitness da melhor solução inicial: {round(fitness_inicial, 2)}")
 
 melhores_fitness = []
 melhores_solucoes = []
