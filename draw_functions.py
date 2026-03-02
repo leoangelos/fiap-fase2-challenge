@@ -4,8 +4,6 @@ Created on Fri Dec 22 16:03:11 2023
 
 @author: SérgioPolimante
 """
-import pylab
-import matplotlib.pyplot as plt
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib
@@ -73,20 +71,7 @@ def draw_paths(screen: pygame.Surface, path: List[Tuple[int, int]], rgb_color: T
     pygame.draw.lines(screen, rgb_color, True, path, width=width)
 
 
-def draw_text(screen: pygame.Surface, text: str, color: pygame.Color) -> None:
-    """
-    Draw text on a Pygame screen.
-    """
-    pygame.font.init()
 
-    font_size = 15
-    my_font = pygame.font.SysFont('Arial', font_size)
-    text_surface = my_font.render(text, False, color)
-
-    cities_locations = []  # Assuming you have this list defined somewhere
-    text_position = (np.average(np.array(cities_locations)[:, 0]), HEIGHT - 1.5 * font_size)
-
-    screen.blit(text_surface, text_position)
 
 
 def draw_info_overlay(screen: pygame.Surface, geracao: int, fitness: float, sem_melhora: int, n_veiculos: int) -> None:
