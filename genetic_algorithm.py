@@ -62,14 +62,8 @@ def calculate_fitness(path: List[Tuple[float, float]]) -> float:
 
 def order_crossover(parent1: List[Tuple[float, float]], parent2: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
     """
-    Perform order crossover (OX) between two parent sequences to create a child sequence.
-
-    Parameters:
-    - parent1 (List[Tuple[float, float]]): The first parent sequence.
-    - parent2 (List[Tuple[float, float]]): The second parent sequence.
-
-    Returns:
-    List[Tuple[float, float]]: The child sequence resulting from the order crossover.
+    Perform order crossover (OX1) between two parent sequences to create a child sequence.
+    Uses pre-allocated array to avoid index corruption from insert().
     """
     length = len(parent1)
 
@@ -77,15 +71,20 @@ def order_crossover(parent1: List[Tuple[float, float]], parent2: List[Tuple[floa
     start_index = random.randint(0, length - 1)
     end_index = random.randint(start_index + 1, length)
 
-    # Initialize the child with a copy of the substring from parent1
-    child = parent1[start_index:end_index]
+    # Pre-allocate child with None, copy segment from parent1
+    child = [None] * length
+    child[start_index:end_index] = parent1[start_index:end_index]
 
-    # Fill in the remaining positions with genes from parent2
-    remaining_positions = [i for i in range(length) if i < start_index or i >= end_index]
-    remaining_genes = [gene for gene in parent2 if gene not in child]
+    # Genes from parent2 not already in the copied segment
+    segment_set = set(parent1[start_index:end_index])
+    remaining_genes = [gene for gene in parent2 if gene not in segment_set]
 
-    for position, gene in zip(remaining_positions, remaining_genes):
-        child.insert(position, gene)
+    # Fill remaining positions in order
+    j = 0
+    for i in range(length):
+        if child[i] is None:
+            child[i] = remaining_genes[j]
+            j += 1
 
     return child
 
@@ -119,31 +118,22 @@ def order_crossover(parent1: List[Tuple[float, float]], parent2: List[Tuple[floa
 # TODO: implement a mutation_intensity and invert pieces of code instead of just swamping two. 
 def mutate(solution:  List[Tuple[float, float]], mutation_probability: float) ->  List[Tuple[float, float]]:
     """
-    Mutate a solution by inverting a segment of the sequence with a given mutation probability.
-
-    Parameters:
-    - solution (List[int]): The solution sequence to be mutated.
-    - mutation_probability (float): The probability of mutation for each individual in the solution.
-
-    Returns:
-    List[int]: The mutated solution sequence.
+    Mutate a solution by inverting a random segment (2-opt style move).
+    Much stronger than adjacent swap — enables larger structural changes.
     """
-    mutated_solution = copy.deepcopy(solution)
+    if random.random() >= mutation_probability:
+        return solution
 
-    # Check if mutation should occur    
-    if random.random() < mutation_probability:
-        
-        # Ensure there are at least two cities to perform a swap
-        if len(solution) < 2:
-            return solution
-    
-        # Select a random index (excluding the last index) for swapping
-        index = random.randint(0, len(solution) - 2)
-        
-        # Swap the cities at the selected index and the next index
-        mutated_solution[index], mutated_solution[index + 1] = solution[index + 1], solution[index]   
-        
-    return mutated_solution
+    n = len(solution)
+    if n < 3:
+        return solution
+
+    mutated = list(solution)
+    # Pick two random points and reverse the segment between them
+    i = random.randint(0, n - 2)
+    j = random.randint(i + 1, n - 1)
+    mutated[i:j+1] = reversed(mutated[i:j+1])
+    return mutated
 
 ### Demonstration: mutation test code    
 # # Example usage:
