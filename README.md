@@ -4,7 +4,7 @@ Este repositório contém uma implementação em Python para resolver o **Proble
 
 ## Visão Geral
 
-O AG evolui iterativamente uma população de soluções (permutações de cidades) usando seleção, cruzamento (OX1) e mutação. O elitismo garante que a **melhor solução global** nunca seja perdida entre gerações. Ao convergir (N gerações sem melhora), os resultados são enviados automaticamente ao **agente ChatGPT** para análise e geração do roteiro de entrega.
+O AG evolui iterativamente uma população de soluções (permutações de cidades) usando seleção, cruzamento (OX1) e mutação. O algoritmo foi aprimorado com um **ciclo de refinamento iterativo** que aplica busca local (2-opt) e re-injeta a solução na população até a convergência total. Ao finalizar, os resultados podem ser enviados automaticamente ao **agente ChatGPT** para análise e geração do roteiro de entrega.
 
 ---
 
@@ -14,22 +14,24 @@ O AG evolui iterativamente uma população de soluções (permutações de cidad
 |---------|-----------|
 | `tsp.py` | Solucionador TSP (1 veículo) com visualização Pygame |
 | `mtsp.py` | Solucionador mTSP com frota heterogênea, Pygame e integração OpenAI |
-| `genetic_algorithm.py` | AG: população, fitness, crossover, mutação e ordenação |
-| `draw_functions.py` | Desenho de cidades, rotas e gráfico de convergência |
+| `genetic_algorithm.py` | Funções core do AG: crossover OX1, mutação e inicialização |
+| `draw_functions.py` | Desenho otimizado de cidades, rotas, feedbacks em tempo real e gráfico de convergência |
 | `benchmark_att48.py` | Dataset benchmark att48 (48 cidades/hospitais) |
 
 ---
 
-## Frota Heterogênea (mtsp.py)
+## Frota Heterogênea e Reabastecimento (mtsp.py)
 
 O mTSP modela uma frota de **carros** e **motos** com características distintas:
 
 | Veículo | Velocidade | Autonomia |
 |---------|-----------|-----------|
-| 🚗 Carro | 80 km/h | 600 km |
+| 🚗 Carro | 100 km/h | 650 km |
 | 🏍️ Moto | 120 km/h | 400 km |
 
-Quando um veículo não tem autonomia suficiente para a próxima cidade, ele retorna à base para reabastecer — gerando **distância efetiva maior** que a distância direta. Esse custo de reabastecimento é incluído na função de fitness.
+Quando um veículo não tem autonomia suficiente para a próxima cidade, ele retorna à base para reabastecer — gerando **distância efetiva maior** que a distância direta. 
+
+**NOVO:** O parâmetro `REABASTECIMENTO_ATIVO` permite ligar/desligar a simulação de combustível. Se definido como `False`, os veículos ganham autonomia infinita e calculam apenas a menor rota direta.
 
 ---
 
@@ -37,72 +39,56 @@ Quando um veículo não tem autonomia suficiente para a próxima cidade, ele ret
 
 Configure a variável `OBJETIVO` para escolher a estratégia:
 
-```python
-# Opções: 'distancia' | 'tempo' | 'hibrido'
-OBJETIVO = 'distancia'
-ALFA_HIBRIDO = 0.5   # Só para modo híbrido: 0.0 = só distância, 1.0 = só tempo
-VELOCIDADE_REF = 100 # km/h usado para normalizar tempo em km-equivalente
-```
-
 | Modo | Fitness | Comportamento |
 |------|---------|--------------|
-| `'distancia'` | `max(dist_ef) + peso × Σ dist_ef` | Minimiza km percorrido. Carros assumem cidades distantes (maior autonomia = menos desvios de reabastecimento). Motos ficam com cidades próximas. |
-| `'tempo'` | `max(tempo) + peso × Σ tempo` | Todos os veículos terminam no mesmo horário (desvio < 2h). Motos percorrem mais km pois são mais rápidas. |
-| `'hibrido'` | `(1−α) × componente_dist + α × componente_tempo` | Equilibra economia de combustível e horário de chegada. Ajuste `ALFA_HIBRIDO` conforme a necessidade. |
+| `'distancia'` | `max(dist_ef) + peso × Σ dist_ef` | Minimiza km percorrido (economia de combustível). A autonomia pesa nas decisões de roteamento. |
+| `'tempo'` | `max(tempo) + peso × Σ tempo` | Equilibra o horário de chegada de todos os veículos, reduzindo o desvio padrão de carga de trabalho. |
+| `'hibrido'` | `(1−α) × comp_dist + α × comp_tempo` | Combina economia e equilíbrio. Ajuste `ALFA_HIBRIDO` (0.0 = distância, 1.0 = tempo). |
 
 ---
 
-## Parâmetros Configuráveis (mtsp.py)
+## Melhorias no Algoritmo Genético
+
+A versão atual implementa táticas agressivas de mitigação de **convergência prematura**:
+
+1. **Seleção por Torneio (k=3):** Aumenta a pressão de seleção escolhendo o indivíduo de menor custo em um grupo aleatório, substituindo a Roleta tradicional.
+2. **Mutação Dinâmica (Inversão):** Opera como um 2-opt estocástico, invertendo grandes segmentos do cromossomo para forte exploração espacial.
+3. **Injeção de Imigrantes (Diversidade):** A cada 50 gerações sem melhoria (estagnação), 10% da população é descartada e substituída por rotas 100% aleatórias para escapar de ótimos locais.
+4. **Ciclo de Refinamento Iterativo (Pós-Otimização):**
+   - Quando o AG principal converge (N gerações sem melhora), a melhor solução passa por uma Otimização Local (2-opt).
+   - O 2-opt foi devidamente ajustado para otimizar a **Distância Efetiva** (considerando reabastecimentos, e não a geométrica simples).
+   - Após o 2-opt, um miniciclo de AG (200 gerações) é rodado para tentar melhorar a solução gerada pelo cenário.
+   - O ciclo (`2-opt -> AG -> Avalia -> 2-opt...`) continua enquanto houver melhoria real no fitness.
+
+---
+
+## Configurações Principais (mtsp.py)
 
 ```python
 # Algoritmo Genético
 TAMANHO_POPULACAO = 100
-PROBABILIDADE_MUTACAO = 0.6
-GERACOES_SEM_MELHORA_PARA_PARAR = 800   # Para após 800 gerações consecutivas sem melhora
-HEURISTICA = 1    # 1 = Vizinho Mais Próximo | 2 = Convex Hull
-PESO_BALANCEAMENTO = 0.2                # Penalidade por desbalanceamento entre rotas
+PROBABILIDADE_MUTACAO = 0.8
+GERACOES_SEM_MELHORA_PARA_PARAR = 800
+HEURISTICA = 2             # 1 = Vizinho Mais Próximo | 2 = Convex Hull
+REABASTECIMENTO_ATIVO = True
 
 # Frota
-N_CARROS = 3
+N_CARROS = 5
 N_MOTOS = 2
-VELOCIDADE_CARRO = 80    # km/h
-VELOCIDADE_MOTO = 120    # km/h
-AUTONOMIA_CARRO = 600    # km
-AUTONOMIA_MOTO = 400     # km
 ```
 
 ---
 
-## Heurísticas de Inicialização
+## Visualização (Pygame)
 
-| Valor | Heurística | Descrição |
-|-------|------------|-----------|
-| `1` | **Vizinho Mais Próximo** | Parte do depósito e vai sempre para a cidade não visitada mais próxima |
-| `2` | **Convex Hull** | Começa pela envoltória convexa e insere os pontos internos na posição de menor custo |
-
----
-
-## Visualização
-
-- **Rotas dos carros** → tons de 🟢 **verde** (escuro ao claro), gerados dinamicamente para qualquer `N_CARROS`
-- **Rotas das motos** → tons de 🔴 **vermelho** (escuro ao vivo), gerados dinâmicamente para qualquer `N_MOTOS`
-- **Gráfico de convergência** em tempo real com label do modo ativo (`Distância Efetiva (km)`, `Tempo (h)` ou `Híbrido (α=X)`)
-- **Screenshot automático** salvo em `rotas/resultado_mtsp_<timestamp>.png`
-
----
-
-## Fluxo de Execução
-
-```
-1. Gerar população inicial (heurística ou aleatória)
-2. Avaliar fitness (distância efetiva / tempo / híbrido)
-3. Selecionar (torneio / roleta / ranking)
-4. Cruzar (OX1 – Order Crossover)
-5. Mutar (inversão de segmento)
-6. Elitismo: preservar melhor solução global (nunca regride)
-7. Verificar convergência (N gerações sem melhora)
-8. Enviar resultado ao agente ChatGPT (geração do roteiro)
-```
+A UI foi fortemente otimizada para feedback em tempo real sem impacto no desempenho:
+- **Painel HUD:** Overlay em tempo real com Geração atual, Valor de Fitness e Contador de Estagnação.
+- **Gráfico Otimizado:** Matplotlib reutiliza a mesma figura via cache, prevenindo lentidão severa na UI visual observada em runs maiores.
+- **Rotas:** 
+  - Tons de 🟢 **verde** gerados dinamicamente para carros.
+  - Tons de 🔴 **vermelho** gerados dinamicamente para motos.
+- **Visualização de Combustível:** Trechos em linha cheia (3px) para viagem normal, e em **linha tracejada mais fina com um marcador central** para mostrar os retornos obrigatórios ao depósito (pitstops de reabastecimento).
+- **Screenshot automático** de cada solução ótima em `rotas/`.
 
 ---
 
@@ -112,16 +98,15 @@ AUTONOMIA_MOTO = 400     # km
 # Instalar dependências
 pip install -r requirements.txt
 
-# TSP (1 veículo)
+# Resolver TSP (1 veículo padrão)
 python3 tsp.py
 
-# mTSP (frota heterogênea)
+# Resolver mTSP (Frota Heterogênea otimizada)
 python3 mtsp.py
 ```
 
-- Pressione **Q** ou feche a janela para encerrar manualmente
-- A melhor solução é salva em `melhor_solucao_mtsp.json`
-- O roteiro final é gerado pelo agente ChatGPT e exibido no terminal
+- Pressione **Q** ou clique no "x" da tela Pygame para encerrar o AG prematuramente e pular para as estatísticas e ChatGPT.
+- O histórico final com os resultados é exposto via Prompt gerado automaticamente ao final da execução.
 
 ---
 
@@ -129,6 +114,7 @@ python3 mtsp.py
 
 - Python 3.x
 - `pygame`
+- `matplotlib`
 - `numpy`
 - `python-dotenv`
 - `openai`
