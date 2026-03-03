@@ -869,96 +869,93 @@ while executando:
 
 # ============================================================================
 # CICLO ITERATIVO DE REFINAMENTO: AG → 2-opt → AG → 2-opt → ...
-# (DESATIVADO) Comentado pois a imagem final do screenshot divergia da
-# visualização do Pygame durante a execução principal.
-# Para reativar, descomente o bloco abaixo.
 # ============================================================================
 melhor_solucao_final = melhor_solucao_global
 
-# ciclo = 0
-# GERACOES_REFINAMENTO = 400
-# fitness_antes_ciclo = calcular_fitness_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
-#
-# while True:
-#     ciclo += 1
-#     print(f"\n--- Ciclo de refinamento {ciclo} ---")
-#     print(f"  Fitness antes do 2-opt: {round(fitness_antes_ciclo, 2)}")
-#     melhor_solucao_final = aplicar_2opt_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
-#     fitness_pos_2opt = calcular_fitness_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
-#     print(f"  Fitness após 2-opt: {round(fitness_pos_2opt, 2)}")
-#
-#     for event in pygame.event.get():
-#         if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
-#             pygame.quit()
-#             sys.exit()
-#     tela.fill(BRANCO)
-#     draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
-#     pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
-#     pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
-#     rotas_temp = dividir_rota(melhor_solucao_final, N_VEICULOS)
-#     for idx_rota, rota_t in enumerate(rotas_temp):
-#         cor_veiculo = CORES_VEICULOS[idx_rota % len(CORES_VEICULOS)]
-#         autonomia_v = VEICULOS[idx_rota]['autonomia']
-#         waypoints = construir_waypoints_reabastecimento(rota_t, DEPOSITO, autonomia_v)
-#         for p_idx in range(len(waypoints) - 1):
-#             inicio_p, t_inicio = waypoints[p_idx]
-#             fim_p, t_fim = waypoints[p_idx + 1]
-#             if inicio_p == DEPOSITO or fim_p == DEPOSITO:
-#                 pygame.draw.line(tela, cor_veiculo, inicio_p, fim_p, 1)
-#                 mid_x = (inicio_p[0] + fim_p[0]) // 2
-#                 mid_y = (inicio_p[1] + fim_p[1]) // 2
-#                 pygame.draw.circle(tela, cor_veiculo, (mid_x, mid_y), 3)
-#             else:
-#                 pygame.draw.line(tela, cor_veiculo, inicio_p, fim_p, 3)
-#     draw_plot(tela, list(range(len(melhores_fitness))), melhores_fitness, x_label='Geração', y_label='[REFINAMENTO 2-OPT]')
-#     draw_info_overlay(tela, f"{geracao} (+{ciclo} 2-opt)", fitness_pos_2opt, "?", N_VEICULOS)
-#     pygame.display.flip()
-#
-#     pop_refinamento = [melhor_solucao_final[:]]
-#     for _ in range(TAMANHO_POPULACAO // 2):
-#         variante = mutacao_mtsp(melhor_solucao_final[:], 1.0, N_VEICULOS, DEPOSITO)
-#         pop_refinamento.append(variante)
-#     restante_ref = TAMANHO_POPULACAO - len(pop_refinamento)
-#     pop_refinamento += gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, restante_ref)
-#     sem_melhora_ref = 0
-#     melhor_fitness_ref = fitness_pos_2opt
-#     melhor_sol_ref = melhor_solucao_final[:]
-#     for gen_ref in range(1, GERACOES_REFINAMENTO * 3 + 1):
-#         pop_refinamento, fit_ref = ordenar_populacao_mtsp(pop_refinamento, DEPOSITO, N_VEICULOS)
-#         if fit_ref[0] < melhor_fitness_ref:
-#             melhor_fitness_ref = fit_ref[0]
-#             melhor_sol_ref = pop_refinamento[0][:]
-#             sem_melhora_ref = 0
-#         else:
-#             sem_melhora_ref += 1
-#         if sem_melhora_ref >= GERACOES_REFINAMENTO:
-#             print(f"  AG extra parou na geração {gen_ref} ({GERACOES_REFINAMENTO} sem melhora)")
-#             break
-#         nova_pop_ref = pop_refinamento[:3]
-#         while len(nova_pop_ref) < TAMANHO_POPULACAO:
-#             def torneio_ref(pop, fit, k=3):
-#                 indices = random.sample(range(len(pop)), k)
-#                 melhor_idx = min(indices, key=lambda i: fit[i])
-#                 return pop[melhor_idx]
-#             p1 = torneio_ref(pop_refinamento, fit_ref)
-#             p2 = torneio_ref(pop_refinamento, fit_ref)
-#             f1 = order_crossover(p1, p2)
-#             f2 = order_crossover(p2, p1)
-#             f1 = mutacao_mtsp(f1, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
-#             f2 = mutacao_mtsp(f2, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
-#             nova_pop_ref.append(f1)
-#             nova_pop_ref.append(f2)
-#         pop_refinamento = nova_pop_ref
-#     print(f"  Fitness após AG extra: {round(melhor_fitness_ref, 2)}")
-#     if melhor_fitness_ref < fitness_antes_ciclo - 0.01:
-#         melhoria = fitness_antes_ciclo - melhor_fitness_ref
-#         print(f"  ✓ Melhoria de {round(melhoria, 2)} km! Continuando...")
-#         melhor_solucao_final = melhor_sol_ref
-#         fitness_antes_ciclo = melhor_fitness_ref
-#     else:
-#         print(f"  ✗ Sem melhoria. Encerrando refinamento.")
-#         break
-# print(f"\nRefinamento concluído: {ciclo} ciclo(s), fitness final = {round(fitness_antes_ciclo, 2)}")
+ciclo = 0
+GERACOES_REFINAMENTO = 400
+fitness_antes_ciclo = calcular_fitness_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
+
+while True:
+    ciclo += 1
+    print(f"\n--- Ciclo de refinamento {ciclo} ---")
+    print(f"  Fitness antes do 2-opt: {round(fitness_antes_ciclo, 2)}")
+    melhor_solucao_final = aplicar_2opt_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
+    fitness_pos_2opt = calcular_fitness_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
+    print(f"  Fitness após 2-opt: {round(fitness_pos_2opt, 2)}")
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_q):
+            pygame.quit()
+            sys.exit()
+    tela.fill(BRANCO)
+    draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
+    pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
+    pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
+    rotas_temp = dividir_rota(melhor_solucao_final, N_VEICULOS)
+    for idx_rota, rota_t in enumerate(rotas_temp):
+        cor_veiculo = CORES_VEICULOS[idx_rota % len(CORES_VEICULOS)]
+        autonomia_v = VEICULOS[idx_rota]['autonomia']
+        waypoints = construir_waypoints_reabastecimento(rota_t, DEPOSITO, autonomia_v)
+        for p_idx in range(len(waypoints) - 1):
+            inicio_p, t_inicio = waypoints[p_idx]
+            fim_p, t_fim = waypoints[p_idx + 1]
+            if inicio_p == DEPOSITO or fim_p == DEPOSITO:
+                pygame.draw.line(tela, cor_veiculo, inicio_p, fim_p, 1)
+                mid_x = (inicio_p[0] + fim_p[0]) // 2
+                mid_y = (inicio_p[1] + fim_p[1]) // 2
+                pygame.draw.circle(tela, cor_veiculo, (mid_x, mid_y), 3)
+            else:
+                pygame.draw.line(tela, cor_veiculo, inicio_p, fim_p, 3)
+    draw_plot(tela, list(range(len(melhores_fitness))), melhores_fitness, x_label='Geração', y_label='[REFINAMENTO 2-OPT]')
+    draw_info_overlay(tela, f"{geracao} (+{ciclo} 2-opt)", fitness_pos_2opt, "?", N_VEICULOS)
+    pygame.display.flip()
+
+    pop_refinamento = [melhor_solucao_final[:]]
+    for _ in range(TAMANHO_POPULACAO // 2):
+        variante = mutacao_mtsp(melhor_solucao_final[:], 1.0, N_VEICULOS, DEPOSITO)
+        pop_refinamento.append(variante)
+    restante_ref = TAMANHO_POPULACAO - len(pop_refinamento)
+    pop_refinamento += gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, restante_ref)
+    sem_melhora_ref = 0
+    melhor_fitness_ref = fitness_pos_2opt
+    melhor_sol_ref = melhor_solucao_final[:]
+    for gen_ref in range(1, GERACOES_REFINAMENTO * 3 + 1):
+        pop_refinamento, fit_ref = ordenar_populacao_mtsp(pop_refinamento, DEPOSITO, N_VEICULOS)
+        if fit_ref[0] < melhor_fitness_ref:
+            melhor_fitness_ref = fit_ref[0]
+            melhor_sol_ref = pop_refinamento[0][:]
+            sem_melhora_ref = 0
+        else:
+            sem_melhora_ref += 1
+        if sem_melhora_ref >= GERACOES_REFINAMENTO:
+            print(f"  AG extra parou na geração {gen_ref} ({GERACOES_REFINAMENTO} sem melhora)")
+            break
+        nova_pop_ref = pop_refinamento[:3]
+        while len(nova_pop_ref) < TAMANHO_POPULACAO:
+            def torneio_ref(pop, fit, k=3):
+                indices = random.sample(range(len(pop)), k)
+                melhor_idx = min(indices, key=lambda i: fit[i])
+                return pop[melhor_idx]
+            p1 = torneio_ref(pop_refinamento, fit_ref)
+            p2 = torneio_ref(pop_refinamento, fit_ref)
+            f1 = order_crossover(p1, p2)
+            f2 = order_crossover(p2, p1)
+            f1 = mutacao_mtsp(f1, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
+            f2 = mutacao_mtsp(f2, PROBABILIDADE_MUTACAO, N_VEICULOS, DEPOSITO)
+            nova_pop_ref.append(f1)
+            nova_pop_ref.append(f2)
+        pop_refinamento = nova_pop_ref
+    print(f"  Fitness após AG extra: {round(melhor_fitness_ref, 2)}")
+    if melhor_fitness_ref < fitness_antes_ciclo - 0.01:
+        melhoria = fitness_antes_ciclo - melhor_fitness_ref
+        print(f"  ✓ Melhoria de {round(melhoria, 2)} km! Continuando...")
+        melhor_solucao_final = melhor_sol_ref
+        fitness_antes_ciclo = melhor_fitness_ref
+    else:
+        print(f"  ✗ Sem melhoria. Encerrando refinamento.")
+        break
+print(f"\nRefinamento concluído: {ciclo} ciclo(s), fitness final = {round(fitness_antes_ciclo, 2)}")
 
 rotas_finais = dividir_rota(melhor_solucao_final, N_VEICULOS)
 rotas_finais = [list(rota) for rota in rotas_finais]
