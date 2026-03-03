@@ -44,7 +44,7 @@ FPS = 30
 DESLOCAMENTO_X_GRAFICO = 450
 
 # Ativar relatório GPT
-RELATORIO_GPT = False
+RELATORIO_GPT = True
 
 # Parâmetros do Algoritmo Genético
 N_CIDADES = 48                          # Número de cidades Max 48
@@ -54,6 +54,18 @@ PROBABILIDADE_MUTACAO = 0.8             # Probabilidade de mutação (intensidad
 GERACOES_SEM_MELHORA_PARA_PARAR = 800   # Critério de convergência: para após N gerações sem melhora
 HEURISTICA = 3                          # 1 = Vizinho Mais Próximo | 2 = Convex Hull | 3 = Aleatório
 PESO_BALANCEAMENTO = 0.6                # Penalidade por desbalanceamento entre rotas
+
+# Priorização de Hospitais
+# Quando ativa, hospitais com prioridade alta são penalizados se aparecem
+# tarde na rota (longe do depósito na sequência de visitas).
+PRIORIDADE_ATIVA = True                  # True = ativa penalidade por prioridade
+PESO_PRIORIDADE = 50.0                   # Peso da penalidade de prioridade no fitness
+# Pesos por nível: quanto menor o valor de prioridade, mais urgente a entrega
+PESOS_NIVEL_PRIORIDADE = {
+    0: 3.0,   # Alta  — forte penalidade se visitado tarde
+    1: 1.0,   # Média — penalidade moderada
+    2: 0.0,   # Baixa — sem penalidade extra
+}
 
 # Modo de seleção do depósito
 # 'primeiro'  → usa a primeira cidade do dataset (comportamento original)
@@ -73,7 +85,7 @@ ALFA_HIBRIDO = 0.5      # Peso do componente de TEMPO no híbrido (0.0 a 1.0)
 VELOCIDADE_REF = 100    # km/h — converte horas em km-equivalente para normalizar escalas
 
 # Frota Heterogênea — Tipos de Veículos
-N_CARROS = 3                            # Quantidade de carros
+N_CARROS = 4                            # Quantidade de carros
 N_MOTOS = 0                             # Quantidade de motos
 N_VEICULOS = N_CARROS + N_MOTOS         # Total de veículos
 
@@ -152,6 +164,24 @@ else:
 
 print(f"Cidades a visitar: {len(cidades_sem_deposito)}")
 print(f"Número de veículos: {N_VEICULOS}")
+
+# Construir mapa de prioridade: coordenada escalada → (prioridade, nome_hospital)
+# Usado pela função de fitness quando PRIORIDADE_ATIVA = True
+mapa_prioridade = {}
+for _i, _coord in enumerate(localizacoes_cidades):
+    mapa_prioridade[_coord] = {
+        'prioridade': att_48_priorities[_i],
+        'nome': att_48_hospitals[_i],
+    }
+
+if PRIORIDADE_ATIVA:
+    _labels = {0: 'Alta', 1: 'Média', 2: 'Baixa'}
+    _contagem = {0: 0, 1: 0, 2: 0}
+    for _c in cidades_sem_deposito:
+        _contagem[mapa_prioridade[_c]['prioridade']] += 1
+    print(f"Prioridades ativas: Alta={_contagem[0]}, Média={_contagem[1]}, Baixa={_contagem[2]}")
+else:
+    print("Prioridades desativadas.")
 # ----- Fim benchmark att48
 
 
@@ -350,6 +380,31 @@ def calcular_tempos_rotas(rotas, deposito):
 # cobrirem cidades próximas — maximizando a eficiência de combustível.
 # ============================================================================
 
+def calcular_penalidade_prioridade(rotas):
+    """Calcula penalidade de prioridade: hospitais de alta prioridade que
+    aparecem tarde na rota (posição alta) recebem penalidade proporcional.
+    Quanto mais cedo na rota um hospital urgente for visitado, menor a penalidade."""
+    if not PRIORIDADE_ATIVA:
+        return 0.0
+    penalidade = 0.0
+    for rota in rotas:
+        n = len(rota)
+        if n == 0:
+            continue
+        for pos, cidade in enumerate(rota):
+            info = mapa_prioridade.get(cidade)
+            if info is None:
+                continue
+            peso_nivel = PESOS_NIVEL_PRIORIDADE.get(info['prioridade'], 0.0)
+            # Fração normalizada da posição (0.0 = primeiro, 1.0 = último)
+            fracao_pos = pos / max(n - 1, 1)
+            # Penalidade = peso do nível × posição relativa na rota
+            # Hospitais urgentes no início → penalidade baixa
+            # Hospitais urgentes no final → penalidade alta
+            penalidade += peso_nivel * fracao_pos
+    return penalidade
+
+
 def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=PESO_BALANCEAMENTO):
     """Calcula o fitness do mTSP conforme o OBJETIVO configurado.
 
@@ -359,6 +414,8 @@ def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=P
                            dist_component  (km)
                            tempo_component (horas * VELOCIDADE_REF → km-equivalente)
                            fitness = (1 - ALFA) * dist_component + ALFA * tempo_component
+
+    Quando PRIORIDADE_ATIVA=True, soma penalidade de prioridade ao fitness.
     """
     rotas = dividir_rota(cromossomo, n_veiculos)
     dist_efetivas = []
@@ -370,10 +427,13 @@ def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=P
         dist_efetivas.append(dist_ef)
         tempos.append(tempo)
 
+    # Penalidade de prioridade (0 se desativada)
+    pen_prioridade = calcular_penalidade_prioridade(rotas) * PESO_PRIORIDADE
+
     if OBJETIVO == 'tempo':
         amplitude = max(tempos) - min(tempos)
         # O objetivo é minimizar o tempo máximo + forte penalidade no desbalanceamento
-        return max(tempos) + (peso_balanceamento * sum(tempos)) + (amplitude * 5.0)
+        return max(tempos) + (peso_balanceamento * sum(tempos)) + (amplitude * 5.0) + pen_prioridade
 
     elif OBJETIVO == 'hibrido':
         # Componente de distância (km)
@@ -381,10 +441,10 @@ def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=P
         # Componente de tempo convertido para km-equivalente (h × km/h)
         amplitude_tempo = max(tempos) - min(tempos)
         tempo_component = (max(tempos) + peso_balanceamento * sum(tempos) + amplitude_tempo * 5.0) * VELOCIDADE_REF
-        return (1 - ALFA_HIBRIDO) * dist_component + ALFA_HIBRIDO * tempo_component
+        return (1 - ALFA_HIBRIDO) * dist_component + ALFA_HIBRIDO * tempo_component + pen_prioridade
 
     else:  # 'distancia'
-        return max(dist_efetivas) + peso_balanceamento * sum(dist_efetivas)
+        return max(dist_efetivas) + peso_balanceamento * sum(dist_efetivas) + pen_prioridade
 
 
 def ordenar_populacao_mtsp(populacao, deposito, n_veiculos):
@@ -731,7 +791,15 @@ while executando:
               melhores_fitness, y_label=f"Fitness - {label_fitness}")
 
     # Desenhar cidades e depósito
-    draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
+    # Desenhar cidades com cor por prioridade (se ativa)
+    if PRIORIDADE_ATIVA:
+        _cores_prio = {0: VERMELHO, 1: AMARELO, 2: (0, 180, 0)}  # Alta=vermelho, Média=amarelo, Baixa=verde
+        for _cidade in cidades_sem_deposito:
+            _info = mapa_prioridade.get(_cidade)
+            _cor_c = _cores_prio.get(_info['prioridade'], VERMELHO) if _info else VERMELHO
+            pygame.draw.circle(tela, _cor_c, _cidade, RAIO_NO)
+    else:
+        draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
     # Depósito com cor especial e tamanho maior
     pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
     pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
@@ -881,7 +949,7 @@ while executando:
 melhor_solucao_final = melhor_solucao_global
 
 ciclo = 0
-GERACOES_REFINAMENTO = 400
+GERACOES_REFINAMENTO = 300
 fitness_antes_ciclo = calcular_fitness_mtsp(melhor_solucao_final, DEPOSITO, N_VEICULOS)
 
 while True:
@@ -897,7 +965,14 @@ while True:
             pygame.quit()
             sys.exit()
     tela.fill(BRANCO)
-    draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
+    if PRIORIDADE_ATIVA:
+        _cores_prio = {0: VERMELHO, 1: AMARELO, 2: (0, 180, 0)}
+        for _cidade in cidades_sem_deposito:
+            _info = mapa_prioridade.get(_cidade)
+            _cor_c = _cores_prio.get(_info['prioridade'], VERMELHO) if _info else VERMELHO
+            pygame.draw.circle(tela, _cor_c, _cidade, RAIO_NO)
+    else:
+        draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
     pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
     pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
     rotas_temp = dividir_rota(melhor_solucao_final, N_VEICULOS)
@@ -1059,6 +1134,13 @@ for idx, rota in enumerate(rotas_finais):
     v = VEICULOS[idx]
     print(f"{v['tipo']} V{idx+1}: {len(rota)} cidades, dist_efetiva={round(dist_ef_resumo[idx], 2)}km, "
           f"tempo={round(tempos_resumo[idx], 2)}h, reabastecimentos={reab_resumo[idx]}")
+    if PRIORIDADE_ATIVA:
+        _labels_p = {0: '🔴Alta', 1: '🟡Média', 2: '🟢Baixa'}
+        for cidade in rota:
+            info = mapa_prioridade.get(cidade)
+            if info:
+                idx_c = localizacoes_cidades.index(cidade)
+                print(f"    → {info['nome']} [{_labels_p[info['prioridade']]}] (cidade {idx_c+1})")
 distancia_total_real = sum(dist_ef_resumo)
 tempo_total = sum(tempos_resumo)
 media_tempo = tempo_total / len(tempos_resumo)
@@ -1084,53 +1166,69 @@ if RELATORIO_GPT:
     else:
         client = OpenAI(api_key=api_key)
 
-        # Montar dados das rotas com coordenadas originais do benchmark ATT48
+        # Montar dados das rotas com nomes de hospitais e prioridades
+        _labels_prio = {0: 'ALTA', 1: 'MÉDIA', 2: 'BAIXA'}
         descricao_rotas = ""
         for idx, rota in enumerate(rotas_finais):
             v = VEICULOS[idx]
-            descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} cidades, "
+            descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} hospitais, "
             descricao_rotas += f"dist_efetiva: {round(dist_ef_final[idx], 2)}km, "
             descricao_rotas += f"tempo: {round(tempos_final[idx], 2)}h, "
             descricao_rotas += f"reabastecimentos: {reab_final[idx]})\n"
             descricao_rotas += f"Trajeto: Depósito → "
             cidades_rota = []
             for cidade in rota:
-                # Encontrar o índice original da cidade no benchmark
                 idx_cidade = localizacoes_cidades.index(cidade)
-                coord_original = att_48_cities_locations[idx_cidade]
-                cidades_rota.append(f"Cidade {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
+                nome_hosp = att_48_hospitals[idx_cidade]
+                prio = _labels_prio.get(att_48_priorities[idx_cidade], '?')
+                cidades_rota.append(f"{nome_hosp} [Prioridade: {prio}]")
             descricao_rotas += " → ".join(cidades_rota)
             descricao_rotas += " → Depósito\n"
 
+        # Info de prioridade para o prompt
+        prioridade_info = ""
+        if PRIORIDADE_ATIVA:
+            prioridade_info = f"""
+## Priorização de Entregas
+- Sistema de prioridades ATIVO (peso no fitness: {PESO_PRIORIDADE})
+- Alta (🔴): deve ser visitado o mais cedo possível na rota
+- Média (🟡): penalidade moderada se visitado tarde
+- Baixa (🟢): sem penalidade extra
+"""
+        else:
+            prioridade_info = "\n## Priorização de Entregas\n- Sistema de prioridades DESATIVADO\n"
+
         prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
-    Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
+Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
 
-    ## Dados do Problema
-    - Benchmark: ATT48 (48 hospitais)
-    - Número de veículos: {N_VEICULOS} ({N_CARROS} carros + {N_MOTOS} motos)
-    - Depósito (ponto de partida/chegada): ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
-    - Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}
-    - Objetivo: {OBJETIVO}
-    - Gerações: {geracao}
-    - Fitness final: {round(melhor_fitness_final, 2)}
+## Dados do Problema
+- Benchmark: ATT48 (48 hospitais)
+- Número de veículos: {N_VEICULOS} ({N_CARROS} carros + {N_MOTOS} motos)
+- Depósito (ponto de partida/chegada): ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
+- Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else ('Convex Hull' if HEURISTICA == 2 else 'Aleatório')}
+- Objetivo: {OBJETIVO}
+- Gerações: {geracao}
+- Fitness final: {round(melhor_fitness_final, 2)}
+{prioridade_info}
+## Resultados das Rotas
+{descricao_rotas}
 
-    ## Resultados das Rotas
-    {descricao_rotas}
+## Estatísticas
+- Distância efetiva total: {round(distancia_total_real, 2)}km
+- Tempo total: {round(tempo_total, 2)}h
+- Desvio padrão entre tempos: {round(desvio_final, 2)}h
+- Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
+- Total de reabastecimentos: {sum(reab_final)}
 
-    ## Estatísticas
-    - Distância efetiva total: {round(distancia_total_real, 2)}km
-    - Tempo total: {round(tempo_total, 2)}h
-    - Desvio padrão entre tempos: {round(desvio_final, 2)}h
-    - Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
-    - Total de reabastecimentos: {sum(reab_final)}
+## Instruções
+1. Descreva o trajeto de cada veículo de forma clara e objetiva, mencionando os nomes dos hospitais
+2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
+3. Analise se os hospitais de prioridade ALTA estão sendo visitados no início das rotas
+4. Dê uma nota de 1 a 10 para o balanceamento
+5. Dê uma nota de 1 a 10 para o atendimento das prioridades
+6. Sugira possíveis melhorias
 
-    ## Instruções
-    1. Descreva o trajeto de cada veículo de forma clara e objetiva
-    2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
-    3. Dê uma nota de 1 a 10 para o balanceamento
-    4. Sugira possíveis melhorias
-
-    Responda em português brasileiro."""
+Responda em português brasileiro."""
 
         try:
             response = client.chat.completions.create(
