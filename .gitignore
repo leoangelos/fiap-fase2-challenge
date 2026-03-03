@@ -2,4 +2,5 @@ venv/
 .env
 __pycache__/
 *.json
-rotas/
+rotas/*
+!rotas/.gitkeep
