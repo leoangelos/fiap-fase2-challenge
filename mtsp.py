@@ -43,13 +43,16 @@ RAIO_NO = 10
 FPS = 30
 DESLOCAMENTO_X_GRAFICO = 450
 
+# Ativar relatório GPT
+RELATORIO_GPT = False
+
 # Parâmetros do Algoritmo Genético
 N_CIDADES = 48                          # Número de cidades Max 48
 TAMANHO_POPULACAO = 100                 # Tamanho da população de cromossomos
 
 PROBABILIDADE_MUTACAO = 0.8             # Probabilidade de mutação (intensidade: alta = explora mais)
 GERACOES_SEM_MELHORA_PARA_PARAR = 800   # Critério de convergência: para após N gerações sem melhora
-HEURISTICA = 2                          # 1 = Vizinho Mais Próximo | 2 = Convex Hull
+HEURISTICA = 3                          # 1 = Vizinho Mais Próximo | 2 = Convex Hull | 3 = Aleatório
 PESO_BALANCEAMENTO = 0.6                # Penalidade por desbalanceamento entre rotas
 
 # Modo de seleção do depósito
@@ -65,7 +68,7 @@ DEPOSITO_MODO = 'central'
 # 'tempo'     → equilibra tempo de chegada entre todos os veículos
 # 'hibrido'   → combina os dois objetivos: economia de combustível + equilíbrio de tempo
 #               Ajuste ALFA_HIBRIDO: 0.0 = só distância, 1.0 = só tempo, 0.5 = balanceado
-OBJETIVO = 'hibrido'
+OBJETIVO = 'distancia'
 ALFA_HIBRIDO = 0.5      # Peso do componente de TEMPO no híbrido (0.0 a 1.0)
 VELOCIDADE_REF = 100    # km/h — converte horas em km-equivalente para normalizar escalas
 
@@ -651,10 +654,15 @@ elif HEURISTICA == 2:
     solucao_envoltoria = insercao_envoltoria_convexa(cidades_sem_deposito)
     populacao = [solucao_envoltoria] + gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, TAMANHO_POPULACAO - 1)
 
-else:
-    # Totalmente aleatória
-    print("Heurística inválida! Usando população aleatória.")
+elif HEURISTICA == 3:
+    # Totalmente aleatória — máxima diversidade genética, sem viés heurístico
+    print("Heurística selecionada: Aleatório")
     populacao = gerar_populacao_aleatoria_mtsp(cidades_sem_deposito, TAMANHO_POPULACAO)
+
+else:
+    print("ERRO: Heurística inválida! Use 1 (Vizinho Mais Próximo), 2 (Convex Hull) ou 3 (Aleatório).")
+    pygame.quit()
+    sys.exit(1)
 
 fitness_inicial = calcular_fitness_mtsp(populacao[0], DEPOSITO, N_VEICULOS)
 print(f"Fitness da melhor solução inicial (mTSP): {round(fitness_inicial, 2)}")
@@ -1061,86 +1069,90 @@ print(f"Desvio padrão entre tempos: {round(desvio_final, 2)}h")
 print(f"Balanço tempo: {round(min(tempos_resumo), 2)}h - {round(max(tempos_resumo), 2)}h (diferença: {round(max(tempos_resumo) - min(tempos_resumo), 2)}h)")
 print(f"Total reabastecimentos: {sum(reab_resumo)}")
 
-# === Agente OpenAI - Análise das Rotas ===
-print("\n=== Enviando resultados para o agente ChatGPT... ===\n")
+if RELATORIO_GPT:
+    # === Agente OpenAI - Análise das Rotas ===
+    print("\n=== Enviando resultados para o agente ChatGPT... ===\n")
 
-from dotenv import load_dotenv
-from openai import OpenAI
+    from dotenv import load_dotenv
+    from openai import OpenAI
 
-load_dotenv()
+    load_dotenv()
 
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    print("ERRO: OPENAI_API_KEY não encontrada no arquivo .env")
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("ERRO: OPENAI_API_KEY não encontrada no arquivo .env")
+    else:
+        client = OpenAI(api_key=api_key)
+
+        # Montar dados das rotas com coordenadas originais do benchmark ATT48
+        descricao_rotas = ""
+        for idx, rota in enumerate(rotas_finais):
+            v = VEICULOS[idx]
+            descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} cidades, "
+            descricao_rotas += f"dist_efetiva: {round(dist_ef_final[idx], 2)}km, "
+            descricao_rotas += f"tempo: {round(tempos_final[idx], 2)}h, "
+            descricao_rotas += f"reabastecimentos: {reab_final[idx]})\n"
+            descricao_rotas += f"Trajeto: Depósito → "
+            cidades_rota = []
+            for cidade in rota:
+                # Encontrar o índice original da cidade no benchmark
+                idx_cidade = localizacoes_cidades.index(cidade)
+                coord_original = att_48_cities_locations[idx_cidade]
+                cidades_rota.append(f"Cidade {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
+            descricao_rotas += " → ".join(cidades_rota)
+            descricao_rotas += " → Depósito\n"
+
+        prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
+    Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
+
+    ## Dados do Problema
+    - Benchmark: ATT48 (48 hospitais)
+    - Número de veículos: {N_VEICULOS} ({N_CARROS} carros + {N_MOTOS} motos)
+    - Depósito (ponto de partida/chegada): ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
+    - Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}
+    - Objetivo: {OBJETIVO}
+    - Gerações: {geracao}
+    - Fitness final: {round(melhor_fitness_final, 2)}
+
+    ## Resultados das Rotas
+    {descricao_rotas}
+
+    ## Estatísticas
+    - Distância efetiva total: {round(distancia_total_real, 2)}km
+    - Tempo total: {round(tempo_total, 2)}h
+    - Desvio padrão entre tempos: {round(desvio_final, 2)}h
+    - Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
+    - Total de reabastecimentos: {sum(reab_final)}
+
+    ## Instruções
+    1. Descreva o trajeto de cada veículo de forma clara e objetiva
+    2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
+    3. Dê uma nota de 1 a 10 para o balanceamento
+    4. Sugira possíveis melhorias
+
+    Responda em português brasileiro."""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Você é um analista de logística especializado em otimização de rotas de veículos."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            resposta = response.choices[0].message.content
+            print("=" * 60)
+            print("ANÁLISE DO AGENTE ChatGPT")
+            print("=" * 60)
+            print(resposta)
+            print("=" * 60)
+        except Exception as e:
+            print(f"Erro ao chamar a API OpenAI: {e}")
+
 else:
-    client = OpenAI(api_key=api_key)
-
-    # Montar dados das rotas com coordenadas originais do benchmark ATT48
-    descricao_rotas = ""
-    for idx, rota in enumerate(rotas_finais):
-        v = VEICULOS[idx]
-        descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} cidades, "
-        descricao_rotas += f"dist_efetiva: {round(dist_ef_final[idx], 2)}km, "
-        descricao_rotas += f"tempo: {round(tempos_final[idx], 2)}h, "
-        descricao_rotas += f"reabastecimentos: {reab_final[idx]})\n"
-        descricao_rotas += f"Trajeto: Depósito → "
-        cidades_rota = []
-        for cidade in rota:
-            # Encontrar o índice original da cidade no benchmark
-            idx_cidade = localizacoes_cidades.index(cidade)
-            coord_original = att_48_cities_locations[idx_cidade]
-            cidades_rota.append(f"Cidade {idx_cidade + 1} ({coord_original[0]}, {coord_original[1]})")
-        descricao_rotas += " → ".join(cidades_rota)
-        descricao_rotas += " → Depósito\n"
-
-    prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
-Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
-
-## Dados do Problema
-- Benchmark: ATT48 (48 hospitais)
-- Número de veículos: {N_VEICULOS} ({N_CARROS} carros + {N_MOTOS} motos)
-- Depósito (ponto de partida/chegada): ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
-- Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else 'Convex Hull'}
-- Objetivo: {OBJETIVO}
-- Gerações: {geracao}
-- Fitness final: {round(melhor_fitness_final, 2)}
-
-## Resultados das Rotas
-{descricao_rotas}
-
-## Estatísticas
-- Distância efetiva total: {round(distancia_total_real, 2)}km
-- Tempo total: {round(tempo_total, 2)}h
-- Desvio padrão entre tempos: {round(desvio_final, 2)}h
-- Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
-- Total de reabastecimentos: {sum(reab_final)}
-
-## Instruções
-1. Descreva o trajeto de cada veículo de forma clara e objetiva
-2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
-3. Dê uma nota de 1 a 10 para o balanceamento
-4. Sugira possíveis melhorias
-
-Responda em português brasileiro."""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Você é um analista de logística especializado em otimização de rotas de veículos."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=2000
-        )
-        resposta = response.choices[0].message.content
-        print("=" * 60)
-        print("ANÁLISE DO AGENTE ChatGPT")
-        print("=" * 60)
-        print(resposta)
-        print("=" * 60)
-    except Exception as e:
-        print(f"Erro ao chamar a API OpenAI: {e}")
+    print("Relatório GPT desativado.")
 
 # Encerrar programa
 pygame.quit()
