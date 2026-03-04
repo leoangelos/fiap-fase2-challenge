@@ -44,7 +44,7 @@ FPS = 30
 DESLOCAMENTO_X_GRAFICO = 450
 
 # Ativar relatório GPT
-RELATORIO_GPT = True
+RELATORIO_GPT = False
 
 # Parâmetros do Algoritmo Genético
 N_CIDADES = 48                          # Número de cidades Max 48
@@ -58,13 +58,14 @@ PESO_BALANCEAMENTO = 0.6                # Penalidade por desbalanceamento entre 
 # Priorização de Hospitais
 # Quando ativa, hospitais com prioridade alta são penalizados se aparecem
 # tarde na rota (longe do depósito na sequência de visitas).
-PRIORIDADE_ATIVA = True                  # True = ativa penalidade por prioridade
+PRIORIDADE_ATIVA = False                  # True = ativa penalidade por prioridade
 PESO_PRIORIDADE = 50.0                   # Peso da penalidade de prioridade no fitness
-# Pesos por nível: quanto menor o valor de prioridade, mais urgente a entrega
+# Pesos por nível: quanto maior o peso, mais o AG prioriza visitar cedo na rota.
+# Hospitais urgentes (prioridade 0) têm peso alto → AG é forçado a visitá-los primeiro.
 PESOS_NIVEL_PRIORIDADE = {
-    0: 3.0,   # Alta  — forte penalidade se visitado tarde
-    1: 1.0,   # Média — penalidade moderada
-    2: 0.0,   # Baixa — sem penalidade extra
+    0: 3.0,   # Alta  — urgência máxima: AG prioriza visitar no início da rota
+    1: 1.0,   # Média — urgência moderada
+    2: 0.0,   # Baixa — sem urgência, pode ir em qualquer posição
 }
 
 # Modo de seleção do depósito
@@ -95,20 +96,30 @@ AUTONOMIA_CARRO = 1200                   # km (precisa reabastecer na base)
 AUTONOMIA_MOTO = 400                    # km (precisa reabastecer na base)
 
 # Configuração de Operação
-REABASTECIMENTO_ATIVO = False            # Se False, veículos ganham autonomia infinita
+REABASTECIMENTO_ATIVO = False             # Se False, veículos ganham autonomia infinita
+CAPACIDADE_CARGA = True                  # Se True, veículos têm limite de cidades por viagem
+
+# Capacidade de carga (máximo de cidades visitadas antes de voltar ao depósito)
+CAPACIDADE_CARRO = 6                     # Carro: 6 cidades por viagem
+CAPACIDADE_MOTO = 2                      # Moto: 2 cidades por viagem
 
 # Lista de veículos: primeiros N_CARROS são carros, restante são motos
 VEICULOS = (
-    [{'tipo': 'Carro 🚗', 'velocidade': VELOCIDADE_CARRO, 'autonomia': AUTONOMIA_CARRO}] * N_CARROS +
-    [{'tipo': 'Moto 🏍️', 'velocidade': VELOCIDADE_MOTO, 'autonomia': AUTONOMIA_MOTO}] * N_MOTOS
+    [{'tipo': 'Carro 🚗', 'velocidade': VELOCIDADE_CARRO, 'autonomia': AUTONOMIA_CARRO, 'capacidade': CAPACIDADE_CARRO}] * N_CARROS +
+    [{'tipo': 'Moto 🏍️', 'velocidade': VELOCIDADE_MOTO, 'autonomia': AUTONOMIA_MOTO, 'capacidade': CAPACIDADE_MOTO}] * N_MOTOS
 )
 
 # Definição de cores
 BRANCO = (255, 255, 255)
 PRETO = (0, 0, 0)
 VERMELHO = (255, 0, 0)
+AZUL = (0, 100, 255)                     # Cor dos postos de gasolina
 
 AMARELO = (200, 200, 0)
+
+# Postos de gasolina — importados do benchmark_att48.py
+# O depósito NÃO é posto de gasolina
+POSTOS_GASOLINA_ATT = att_48_postos_gasolina
 
 # Cores para cada veículo (uma por rota)
 def _gerar_tons_verde(n):
@@ -150,6 +161,16 @@ else:  # 'primeiro'
     DEPOSITO = localizacoes_cidades[0]
     print(f"Depósito (primeiro): {DEPOSITO}")
 
+# Postos de gasolina: escalar para coordenadas de tela (mesma transformação das cidades)
+POSTOS_GASOLINA = [(int(p[0] * escala_x + DESLOCAMENTO_X_GRAFICO),
+                    int(p[1] * escala_y)) for p in POSTOS_GASOLINA_ATT]
+if REABASTECIMENTO_ATIVO:
+    print(f"Reabastecimento ativo: {len(POSTOS_GASOLINA)} postos de gasolina no mapa")
+    for _ip, _pp in enumerate(POSTOS_GASOLINA):
+        print(f"  Posto {_ip+1}: {_pp}")
+else:
+    print("Reabastecimento desativado (autonomia infinita).")
+
 # Cidades a visitar (todas exceto o depósito)
 _todas_sem_deposito = [c for c in localizacoes_cidades if c != DEPOSITO]
 
@@ -182,6 +203,11 @@ if PRIORIDADE_ATIVA:
     print(f"Prioridades ativas: Alta={_contagem[0]}, Média={_contagem[1]}, Baixa={_contagem[2]}")
 else:
     print("Prioridades desativadas.")
+
+if CAPACIDADE_CARGA:
+    print(f"Capacidade de carga ativa: Carro={CAPACIDADE_CARRO} cidades, Moto={CAPACIDADE_MOTO} cidades")
+else:
+    print("Capacidade de carga desativada.")
 # ----- Fim benchmark att48
 
 
@@ -268,83 +294,168 @@ def distancia_euclidiana(a, b):
 
 
 # ============================================================================
-# DISTÂNCIA EFETIVA COM REABASTECIMENTO
+# DISTÂNCIA EFETIVA COM REABASTECIMENTO EM POSTOS DE GASOLINA
 # ============================================================================
-# Quando um veículo não tem autonomia suficiente para chegar à próxima cidade
-# E ainda retornar à base depois, ele deve voltar à base, reabastecer, e
-# então seguir para a próxima cidade. Isso aumenta a distância real percorrida.
+# Quando REABASTECIMENTO_ATIVO=True, o veículo deve ir ao posto de gasolina
+# mais próximo antes que sua autonomia acabe. O depósito NÃO é posto.
+# Quando CAPACIDADE_CARGA=True, o veículo volta ao depósito após visitar
+# N cidades (para buscar mais itens). Ao voltar ao depósito, também reabastece.
 # ============================================================================
 
-def calcular_distancia_efetiva(rota, deposito, autonomia):
-    """Calcula distância real incluindo viagens de volta à base para reabastecer.
-    Retorna (distância_efetiva, número_de_reabastecimentos)."""
+def posto_mais_proximo(posicao, postos):
+    """Retorna o posto de gasolina mais próximo da posição dada."""
+    return min(postos, key=lambda p: distancia_euclidiana(posicao, p))
+
+
+def calcular_distancia_efetiva(rota, deposito, autonomia, capacidade=None):
+    """Calcula distância real incluindo desvios para postos de gasolina
+    (reabastecimento) e/ou retornos ao depósito (recarga de carga).
+    Retorna (distância_efetiva, número_de_paradas_extras)."""
     if not rota:
         return 0, 0
 
     dist_total = 0
     combustivel = autonomia
-    reabastecimentos = 0
+    cidades_visitadas = 0
+    paradas = 0
     pos_atual = deposito
 
     for cidade in rota:
         dist_ate_cidade = distancia_euclidiana(pos_atual, cidade)
-        
+        precisa_carga = False
+        precisa_combustivel = False
+
+        # Verificar restrição de capacidade de carga → volta ao depósito
+        if CAPACIDADE_CARGA and capacidade is not None:
+            if cidades_visitadas >= capacidade:
+                precisa_carga = True
+
+        # Verificar restrição de combustível → vai ao posto mais próximo
+        if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA:
+            # Preciso chegar na cidade E da cidade alcançar o posto mais próximo
+            posto_prox = posto_mais_proximo(cidade, POSTOS_GASOLINA)
+            dist_cidade_posto = distancia_euclidiana(cidade, posto_prox)
+            if combustivel < dist_ate_cidade + dist_cidade_posto:
+                precisa_combustivel = True
+
+        # Capacidade tem prioridade: volta ao depósito (recarrega carga + combustível)
+        if precisa_carga:
+            dist_volta = distancia_euclidiana(pos_atual, deposito)
+            dist_total += dist_volta
+            combustivel = autonomia
+            cidades_visitadas = 0
+            paradas += 1
+            pos_atual = deposito
+            dist_ate_cidade = distancia_euclidiana(deposito, cidade)
+            # Após voltar ao depósito com tanque cheio, re-verificar combustível
+            precisa_combustivel = False
+            if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA:
+                posto_prox = posto_mais_proximo(cidade, POSTOS_GASOLINA)
+                dist_cidade_posto = distancia_euclidiana(cidade, posto_prox)
+                if combustivel < dist_ate_cidade + dist_cidade_posto:
+                    precisa_combustivel = True
+
+        # Se ainda precisa de combustível (não foi ao depósito), vai ao posto mais próximo
+        if precisa_combustivel:
+            posto = posto_mais_proximo(pos_atual, POSTOS_GASOLINA)
+            dist_ate_posto = distancia_euclidiana(pos_atual, posto)
+            dist_total += dist_ate_posto
+            combustivel = autonomia
+            paradas += 1
+            pos_atual = posto
+            dist_ate_cidade = distancia_euclidiana(posto, cidade)
+
         if REABASTECIMENTO_ATIVO:
-            # Preciso chegar na cidade E ter combustível pra voltar à base depois
-            dist_cidade_base = distancia_euclidiana(cidade, deposito)
-            if combustivel < dist_ate_cidade + dist_cidade_base:
-                # Não dá: voltar à base para reabastecer
-                dist_volta = distancia_euclidiana(pos_atual, deposito)
-                dist_total += dist_volta     # Volta à base
-                combustivel = autonomia       # Tanque cheio
-                reabastecimentos += 1
-                pos_atual = deposito
-                dist_ate_cidade = distancia_euclidiana(deposito, cidade)
-                
             combustivel -= dist_ate_cidade
 
         dist_total += dist_ate_cidade
+        cidades_visitadas += 1
         pos_atual = cidade
 
-    # Volta final à base
+    # Volta final à base — verificar se tem combustível suficiente
+    dist_volta_final = distancia_euclidiana(pos_atual, deposito)
+    if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA and combustivel < dist_volta_final:
+        posto = posto_mais_proximo(pos_atual, POSTOS_GASOLINA)
+        dist_ate_posto = distancia_euclidiana(pos_atual, posto)
+        dist_total += dist_ate_posto
+        combustivel = autonomia
+        paradas += 1
+        pos_atual = posto
+
     dist_total += distancia_euclidiana(pos_atual, deposito)
-    return dist_total, reabastecimentos
+    return dist_total, paradas
 
 
-def construir_waypoints_reabastecimento(rota, deposito, autonomia):
-    """Retorna a sequência real de pontos percorridos, incluindo voltas ao depósito
-    para reabastecimento. Útil para desenhar a rota visualmente.
-    Retorna lista de (ponto, tipo) onde tipo é 'cidade' ou 'deposito'."""
+def construir_waypoints_reabastecimento(rota, deposito, autonomia, capacidade=None):
+    """Retorna a sequência real de pontos percorridos, incluindo paradas em
+    postos de gasolina (reabastecimento) e/ou voltas ao depósito (carga).
+    Retorna lista de (ponto, tipo) onde tipo é 'cidade', 'deposito' ou 'posto'."""
     if not rota:
         return [(deposito, 'deposito')]
 
-    waypoints = [(deposito, 'deposito')]  # Ponto de partida
+    waypoints = [(deposito, 'deposito')]
     combustivel = autonomia
+    cidades_visitadas = 0
     pos_atual = deposito
 
     for cidade in rota:
         dist_ate_cidade = distancia_euclidiana(pos_atual, cidade)
-        
+        precisa_carga = False
+        precisa_combustivel = False
+
+        if CAPACIDADE_CARGA and capacidade is not None:
+            if cidades_visitadas >= capacidade:
+                precisa_carga = True
+
+        if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA:
+            posto_prox = posto_mais_proximo(cidade, POSTOS_GASOLINA)
+            dist_cidade_posto = distancia_euclidiana(cidade, posto_prox)
+            if combustivel < dist_ate_cidade + dist_cidade_posto:
+                precisa_combustivel = True
+
+        # Capacidade: volta ao depósito (recarrega carga + combustível)
+        if precisa_carga:
+            waypoints.append((deposito, 'deposito'))
+            combustivel = autonomia
+            cidades_visitadas = 0
+            pos_atual = deposito
+            dist_ate_cidade = distancia_euclidiana(deposito, cidade)
+            precisa_combustivel = False
+            if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA:
+                posto_prox = posto_mais_proximo(cidade, POSTOS_GASOLINA)
+                dist_cidade_posto = distancia_euclidiana(cidade, posto_prox)
+                if combustivel < dist_ate_cidade + dist_cidade_posto:
+                    precisa_combustivel = True
+
+        # Combustível: vai ao posto mais próximo
+        if precisa_combustivel:
+            posto = posto_mais_proximo(pos_atual, POSTOS_GASOLINA)
+            waypoints.append((posto, 'posto'))
+            combustivel = autonomia
+            pos_atual = posto
+            dist_ate_cidade = distancia_euclidiana(posto, cidade)
+
         if REABASTECIMENTO_ATIVO:
-            dist_cidade_base = distancia_euclidiana(cidade, deposito)
-            if combustivel < dist_ate_cidade + dist_cidade_base:
-                # Reabastece: volta à base antes de ir à cidade
-                waypoints.append((deposito, 'deposito'))  # Volta para base
-                combustivel = autonomia
-                pos_atual = deposito
-                dist_ate_cidade = distancia_euclidiana(deposito, cidade)
-                
             combustivel -= dist_ate_cidade
 
         waypoints.append((cidade, 'cidade'))
+        cidades_visitadas += 1
         pos_atual = cidade
 
-    waypoints.append((deposito, 'deposito'))  # Volta final
+    # Volta final — verificar combustível
+    dist_volta_final = distancia_euclidiana(pos_atual, deposito)
+    if REABASTECIMENTO_ATIVO and POSTOS_GASOLINA and combustivel < dist_volta_final:
+        posto = posto_mais_proximo(pos_atual, POSTOS_GASOLINA)
+        waypoints.append((posto, 'posto'))
+        combustivel = autonomia
+        pos_atual = posto
+
+    waypoints.append((deposito, 'deposito'))
     return waypoints
 
 def calcular_tempo_rota(rota, deposito, veiculo):
-    """Calcula o tempo (horas) de uma rota considerando autonomia e velocidade."""
-    dist_efetiva, reab = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'])
+    """Calcula o tempo (horas) de uma rota considerando autonomia, capacidade e velocidade."""
+    dist_efetiva, reab = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'], veiculo.get('capacidade'))
     tempo = dist_efetiva / veiculo['velocidade']
     return tempo, dist_efetiva, reab
 
@@ -422,7 +533,7 @@ def calcular_fitness_mtsp(cromossomo, deposito, n_veiculos, peso_balanceamento=P
     tempos = []
     for idx, rota in enumerate(rotas):
         veiculo = VEICULOS[idx]
-        dist_ef, _ = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'])
+        dist_ef, _ = calcular_distancia_efetiva(rota, deposito, veiculo['autonomia'], veiculo.get('capacidade'))
         tempo, _, _ = calcular_tempo_rota(rota, deposito, veiculo)
         dist_efetivas.append(dist_ef)
         tempos.append(tempo)
@@ -633,19 +744,19 @@ def mutacao_mtsp(cromossomo, probabilidade_mutacao, n_veiculos, deposito):
 
 
 # --- Refinamento 2-opt ---
-def dois_opt(rota, deposito, autonomia):
-    """Aplica 2-opt numa sub-rota usando distância EFETIVA (com reabastecimento)."""
+def dois_opt(rota, deposito, autonomia, capacidade=None):
+    """Aplica 2-opt numa sub-rota usando distância EFETIVA (com reabastecimento e capacidade)."""
     if len(rota) < 3:
         return rota
     melhorou = True
     melhor_rota = list(rota)
-    melhor_dist, _ = calcular_distancia_efetiva(melhor_rota, deposito, autonomia)
+    melhor_dist, _ = calcular_distancia_efetiva(melhor_rota, deposito, autonomia, capacidade)
     while melhorou:
         melhorou = False
         for i in range(len(melhor_rota) - 1):
             for j in range(i + 2, len(melhor_rota)):
                 nova_rota = melhor_rota[:i] + melhor_rota[i:j+1][::-1] + melhor_rota[j+1:]
-                nova_dist, _ = calcular_distancia_efetiva(nova_rota, deposito, autonomia)
+                nova_dist, _ = calcular_distancia_efetiva(nova_rota, deposito, autonomia, capacidade)
                 if nova_dist < melhor_dist:
                     melhor_rota = nova_rota
                     melhor_dist = nova_dist
@@ -654,12 +765,12 @@ def dois_opt(rota, deposito, autonomia):
 
 
 def aplicar_2opt_mtsp(cromossomo, deposito, n_veiculos):
-    """Aplica 2-opt em cada sub-rota do cromossomo usando a autonomia do veículo."""
+    """Aplica 2-opt em cada sub-rota do cromossomo usando a autonomia e capacidade do veículo."""
     rotas = dividir_rota(cromossomo, n_veiculos)
     rotas_otimizadas = []
     for idx, rota in enumerate(rotas):
         veiculo = VEICULOS[idx]
-        rotas_otimizadas.append(dois_opt(rota, deposito, veiculo['autonomia']))
+        rotas_otimizadas.append(dois_opt(rota, deposito, veiculo['autonomia'], veiculo.get('capacidade')))
     novo_cromossomo = []
     for rota in rotas_otimizadas:
         novo_cromossomo.extend(rota)
@@ -804,6 +915,12 @@ while executando:
     pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
     pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
 
+    # Desenhar postos de gasolina (azul) no mapa
+    if REABASTECIMENTO_ATIVO:
+        for _posto in POSTOS_GASOLINA:
+            pygame.draw.circle(tela, AZUL, _posto, RAIO_NO + 3)
+            pygame.draw.circle(tela, PRETO, _posto, RAIO_NO + 3, 2)
+
     # Desenhar rotas da melhor solução (uma cor por veículo)
     rotas_melhor = dividir_rota(melhor_solucao, N_VEICULOS)
     for idx, rota in enumerate(rotas_melhor):
@@ -817,16 +934,16 @@ while executando:
             pygame.draw.line(tela, cor, rota[0], DEPOSITO, 3)
             continue
 
-        # Construir waypoints reais (com paradas de reabastecimento)
-        waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, veiculo['autonomia'])
+        # Construir waypoints reais (com paradas de reabastecimento/carga)
+        waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, veiculo['autonomia'], veiculo.get('capacidade'))
         pontos = [wp[0] for wp in waypoints]
         tipos = [wp[1] for wp in waypoints]
 
         # Desenhar segmento a segmento
         for i in range(len(pontos) - 1):
             p1, p2 = pontos[i], pontos[i + 1]
-            # Segmento de reabastecimento: tracejado e mais fino
-            if tipos[i] == 'deposito' or tipos[i + 1] == 'deposito':
+            # Segmento de reabastecimento/depósito/posto: tracejado e mais fino
+            if tipos[i] in ('deposito', 'posto') or tipos[i + 1] in ('deposito', 'posto'):
                 # Linha tracejada: alternando segmentos de 8px
                 dx = p2[0] - p1[0]
                 dy = p2[1] - p1[1]
@@ -975,15 +1092,20 @@ while True:
         draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
     pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
     pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
+    if REABASTECIMENTO_ATIVO:
+        for _posto in POSTOS_GASOLINA:
+            pygame.draw.circle(tela, AZUL, _posto, RAIO_NO + 3)
+            pygame.draw.circle(tela, PRETO, _posto, RAIO_NO + 3, 2)
     rotas_temp = dividir_rota(melhor_solucao_final, N_VEICULOS)
     for idx_rota, rota_t in enumerate(rotas_temp):
         cor_veiculo = CORES_VEICULOS[idx_rota % len(CORES_VEICULOS)]
         autonomia_v = VEICULOS[idx_rota]['autonomia']
-        waypoints = construir_waypoints_reabastecimento(rota_t, DEPOSITO, autonomia_v)
+        capacidade_v = VEICULOS[idx_rota].get('capacidade')
+        waypoints = construir_waypoints_reabastecimento(rota_t, DEPOSITO, autonomia_v, capacidade_v)
         for p_idx in range(len(waypoints) - 1):
             inicio_p, t_inicio = waypoints[p_idx]
             fim_p, t_fim = waypoints[p_idx + 1]
-            if inicio_p == DEPOSITO or fim_p == DEPOSITO:
+            if t_inicio in ('deposito', 'posto') or t_fim in ('deposito', 'posto'):
                 pygame.draw.line(tela, cor_veiculo, inicio_p, fim_p, 1)
                 mid_x = (inicio_p[0] + fim_p[0]) // 2
                 mid_y = (inicio_p[1] + fim_p[1]) // 2
@@ -1089,19 +1211,24 @@ tela.fill(BRANCO)
 draw_cities(tela, cidades_sem_deposito, VERMELHO, RAIO_NO)
 pygame.draw.circle(tela, AMARELO, DEPOSITO, RAIO_NO + 5)
 pygame.draw.circle(tela, PRETO, DEPOSITO, RAIO_NO + 5, 3)
+if REABASTECIMENTO_ATIVO:
+    for _posto in POSTOS_GASOLINA:
+        pygame.draw.circle(tela, AZUL, _posto, RAIO_NO + 3)
+        pygame.draw.circle(tela, PRETO, _posto, RAIO_NO + 3, 2)
 
 for idx, rota in enumerate(rotas_finais):
     if len(rota) == 0:
         continue
     cor = CORES_VEICULOS[idx % len(CORES_VEICULOS)]
     autonomia_v = VEICULOS[idx]['autonomia']
-    waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, autonomia_v)
+    capacidade_v = VEICULOS[idx].get('capacidade')
+    waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, autonomia_v, capacidade_v)
 
     for p_idx in range(len(waypoints) - 1):
         inicio_p, t_inicio = waypoints[p_idx]
         fim_p, t_fim = waypoints[p_idx + 1]
-        if inicio_p == DEPOSITO or fim_p == DEPOSITO:
-            # Trecho de reabastecimento: linha fina + marcador no ponto médio
+        if t_inicio in ('deposito', 'posto') or t_fim in ('deposito', 'posto'):
+            # Trecho de reabastecimento/carga: linha fina + marcador no ponto médio
             pygame.draw.line(tela, cor, inicio_p, fim_p, 1)
             mid_x = (inicio_p[0] + fim_p[0]) // 2
             mid_y = (inicio_p[1] + fim_p[1]) // 2
@@ -1174,7 +1301,11 @@ if RELATORIO_GPT:
             descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} hospitais, "
             descricao_rotas += f"dist_efetiva: {round(dist_ef_final[idx], 2)}km, "
             descricao_rotas += f"tempo: {round(tempos_final[idx], 2)}h, "
-            descricao_rotas += f"reabastecimentos: {reab_final[idx]})\n"
+            descricao_rotas += f"paradas_extras: {reab_final[idx]})\n"
+            descricao_rotas += f"Autonomia: {v['autonomia']}km | Velocidade: {v['velocidade']}km/h"
+            if CAPACIDADE_CARGA:
+                descricao_rotas += f" | Capacidade de carga: {v.get('capacidade', '?')} cidades"
+            descricao_rotas += "\n"
             descricao_rotas += f"Trajeto: Depósito → "
             cidades_rota = []
             for cidade in rota:
@@ -1198,6 +1329,34 @@ if RELATORIO_GPT:
         else:
             prioridade_info = "\n## Priorização de Entregas\n- Sistema de prioridades DESATIVADO\n"
 
+        # Info de reabastecimento para o prompt
+        reabastecimento_info = ""
+        if REABASTECIMENTO_ATIVO:
+            reabastecimento_info = f"""
+## Reabastecimento em Postos de Gasolina
+- Sistema de reabastecimento ATIVO
+- {len(POSTOS_GASOLINA)} postos de gasolina distribuídos estrategicamente no mapa
+- O depósito NÃO é posto de gasolina
+- Veículos devem ir ao posto mais próximo antes que a autonomia acabe
+- É permitido voltar ao mesmo posto de gasolina mais de uma vez
+- Ao voltar ao depósito por limite de carga, o tanque também é reabastecido
+"""
+        else:
+            reabastecimento_info = "\n## Reabastecimento\n- Reabastecimento DESATIVADO (autonomia infinita)\n"
+
+        # Info de capacidade de carga para o prompt
+        capacidade_info = ""
+        if CAPACIDADE_CARGA:
+            capacidade_info = f"""
+## Capacidade de Carga
+- Sistema de capacidade de carga ATIVO
+- Carro: máximo {CAPACIDADE_CARRO} cidades por viagem antes de voltar ao depósito
+- Moto: máximo {CAPACIDADE_MOTO} cidades por viagem antes de voltar ao depósito
+- Ao atingir o limite, o veículo retorna ao depósito para buscar mais itens
+"""
+        else:
+            capacidade_info = "\n## Capacidade de Carga\n- Capacidade de carga DESATIVADA (entregas ilimitadas por viagem)\n"
+
         prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
 Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
 
@@ -1210,6 +1369,8 @@ Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) ab
 - Gerações: {geracao}
 - Fitness final: {round(melhor_fitness_final, 2)}
 {prioridade_info}
+{reabastecimento_info}
+{capacidade_info}
 ## Resultados das Rotas
 {descricao_rotas}
 
@@ -1218,15 +1379,17 @@ Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) ab
 - Tempo total: {round(tempo_total, 2)}h
 - Desvio padrão entre tempos: {round(desvio_final, 2)}h
 - Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
-- Total de reabastecimentos: {sum(reab_final)}
+- Total de paradas extras (reabastecimentos + recargas): {sum(reab_final)}
 
 ## Instruções
 1. Descreva o trajeto de cada veículo de forma clara e objetiva, mencionando os nomes dos hospitais
 2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
 3. Analise se os hospitais de prioridade ALTA estão sendo visitados no início das rotas
-4. Dê uma nota de 1 a 10 para o balanceamento
-5. Dê uma nota de 1 a 10 para o atendimento das prioridades
-6. Sugira possíveis melhorias
+4. Se reabastecimento estiver ativo, comente sobre a eficiência das paradas em postos
+5. Se capacidade de carga estiver ativa, comente sobre os retornos ao depósito para recarga
+6. Dê uma nota de 1 a 10 para o balanceamento
+7. Dê uma nota de 1 a 10 para o atendimento das prioridades
+8. Sugira possíveis melhorias
 
 Responda em português brasileiro."""
 

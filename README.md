@@ -16,22 +16,42 @@ O AG evolui iterativamente uma população de soluções (permutações de cidad
 | `mtsp.py` | Solucionador mTSP com frota heterogênea, Pygame e integração OpenAI |
 | `genetic_algorithm.py` | Funções core do AG: crossover OX1, mutação e inicialização |
 | `draw_functions.py` | Desenho otimizado de cidades, rotas, feedbacks em tempo real e gráfico de convergência |
-| `benchmark_att48.py` | Dataset benchmark att48 (48 hospitais) com nomes e prioridades de entrega |
+| `benchmark_att48.py` | Dataset benchmark att48 (48 hospitais) com nomes, prioridades e postos de gasolina |
 
 ---
 
-## Frota Heterogênea e Reabastecimento (mtsp.py)
+## Frota Heterogênea (mtsp.py)
 
 O mTSP modela uma frota de **carros** e **motos** com características distintas:
 
-| Veículo | Velocidade | Autonomia |
-|---------|-----------|-----------|
-| 🚗 Carro | 100 km/h | 1200 km |
-| 🏍️ Moto | 120 km/h | 400 km |
+| Veículo | Velocidade | Autonomia | Capacidade de Carga |
+|---------|-----------|----------|--------------------|
+| 🚗 Carro | 100 km/h | 1200 km | 6 cidades |
+| 🏍️ Moto | 120 km/h | 400 km | 2 cidades |
 
-Quando um veículo não tem autonomia suficiente para a próxima cidade, ele retorna à base para reabastecer — gerando **distância efetiva maior** que a distância direta. 
+O sistema possui **duas restrições independentes** que afetam as rotas:
 
-O parâmetro `REABASTECIMENTO_ATIVO` permite ligar/desligar a simulação de combustível. Se definido como `False`, os veículos ganham autonomia infinita e calculam apenas a menor rota direta.
+### Reabastecimento em Postos de Gasolina
+
+Quando `REABASTECIMENTO_ATIVO = True`, existem **4 postos de gasolina** distribuídos estrategicamente no mapa (representados por círculos 🔵 azuis). Se o veículo não tem autonomia suficiente para a próxima cidade, ele vai até o **posto de gasolina mais próximo** e depois segue para a cidade — gerando **distância efetiva maior** que a distância direta.
+
+**Regras:**
+- O depósito **NÃO** é posto de gasolina
+- Veículos podem reutilizar o mesmo posto de gasolina
+- Ao retornar ao depósito por limite de carga, o tanque também é reabastecido
+
+Se `REABASTECIMENTO_ATIVO = False`, os veículos ganham autonomia infinita.
+
+### Capacidade de Carga
+
+Quando `CAPACIDADE_CARGA = True`, cada veículo pode visitar um número máximo de cidades antes de **retornar ao depósito** para recarregar:
+
+- 🚗 Carro: **6 cidades** por viagem
+- 🏍️ Moto: **2 cidades** por viagem
+
+Ao atingir o limite, o veículo volta ao depósito, recarrega (e reabastece o tanque), e segue para a próxima cidade.
+
+Se `CAPACIDADE_CARGA = False`, não há limite de entregas por viagem.
 
 ---
 
@@ -53,23 +73,25 @@ Cada hospital possui um **nível de prioridade de entrega** definido no `benchma
 
 | Nível | Valor | Visualização | Comportamento |
 |-------|-------|-------------|--------------|
-| Alta | `0` | 🔴 Vermelho | Forte penalidade se visitado tarde na rota |
-| Média | `1` | 🟡 Amarelo | Penalidade moderada |
-| Baixa | `2` | 🟢 Verde | Sem penalidade extra |
+| Alta | `0` | 🔴 Vermelho | Urgência máxima — AG prioriza visita no início da rota |
+| Média | `1` | 🟡 Amarelo | Urgência moderada — incentivo a visitar cedo |
+| Baixa | `2` | 🟢 Verde | Sem urgência — livre para qualquer posição |
 
 ### Como funciona
 
-Quando `PRIORIDADE_ATIVA = True`, a função de fitness adiciona uma **penalidade proporcional à posição** do hospital na rota: hospitais de alta prioridade que aparecem **no final** da rota recebem penalidade maior. Isso incentiva o AG a posicionar hospitais urgentes **no início** de cada rota.
+Quando `PRIORIDADE_ATIVA = True`, a função de fitness adiciona um custo proporcional à **posição × urgência** do hospital na rota. Hospitais com alta urgência (prioridade 0) que ficam no **final** da rota aumentam muito o fitness — forçando o AG a posicioná-los no **início** de cada rota. Hospitais de baixa urgência (prioridade 2) têm peso zero e não sofrem nenhuma pressão de posicionamento.
 
 ### Parâmetros
 
 ```python
 PRIORIDADE_ATIVA = True       # True = ativa penalidade por prioridade
 PESO_PRIORIDADE = 50.0        # Peso da penalidade no fitness
+# Quanto maior o peso, mais o AG prioriza visitar esse hospital no início da rota.
+# NÃO é uma penalidade "contra" o hospital — é a urgência de visitá-lo cedo.
 PESOS_NIVEL_PRIORIDADE = {
-    0: 3.0,   # Alta  — forte penalidade
-    1: 1.0,   # Média — penalidade moderada
-    2: 0.0,   # Baixa — sem penalidade
+    0: 3.0,   # Alta  — urgência máxima: AG força visita no início da rota
+    1: 1.0,   # Média — urgência moderada
+    2: 0.0,   # Baixa — sem urgência, livre para qualquer posição
 }
 ```
 
@@ -114,11 +136,16 @@ TAMANHO_POPULACAO = 100
 PROBABILIDADE_MUTACAO = 0.8
 GERACOES_SEM_MELHORA_PARA_PARAR = 800
 HEURISTICA = 2             # 1 = Vizinho Mais Próximo | 2 = Convex Hull | 3 = Aleatório
-REABASTECIMENTO_ATIVO = True
 
 # Frota
 N_CARROS = 3
 N_MOTOS = 0
+
+# Restrições dos Veículos
+REABASTECIMENTO_ATIVO = True    # True = veículos precisam de combustível
+CAPACIDADE_CARGA = True         # True = limite de cidades por viagem
+CAPACIDADE_CARRO = 6            # Máx cidades por viagem (carro)
+CAPACIDADE_MOTO = 2             # Máx cidades por viagem (moto)
 
 # Priorização
 PRIORIDADE_ATIVA = True
@@ -136,10 +163,11 @@ A UI foi fortemente otimizada para feedback em tempo real sem impacto no desempe
 - **Painel HUD:** Overlay em tempo real com Geração atual, Valor de Fitness e Contador de Estagnação.
 - **Gráfico Otimizado:** Matplotlib reutiliza a mesma figura via cache, prevenindo lentidão severa na UI visual observada em runs maiores.
 - **Cidades por Prioridade:** Quando `PRIORIDADE_ATIVA = True`, as cidades são coloridas por prioridade (🔴 Alta, 🟡 Média, 🟢 Baixa). Quando desativado, todas ficam em vermelho.
+- **Postos de Gasolina:** Quando `REABASTECIMENTO_ATIVO = True`, os 4 postos de gasolina são exibidos como círculos 🔵 **azuis** no mapa.
 - **Rotas:** 
   - Tons de 🟢 **verde** gerados dinamicamente para carros.
   - Tons de 🔴 **vermelho** gerados dinamicamente para motos.
-- **Visualização de Combustível:** Trechos em linha cheia (3px) para viagem normal, e em **linha tracejada mais fina com um marcador central** para mostrar os retornos obrigatórios ao depósito (pitstops de reabastecimento).
+- **Visualização de Combustível/Carga:** Trechos em linha cheia (3px) para viagem normal, e em **linha tracejada mais fina com um marcador central** para mostrar os retornos ao depósito (recarga de carga) ou desvios aos postos de gasolina (reabastecimento).
 - **Screenshot automático** de cada solução ótima em `rotas/`.
 
 ---

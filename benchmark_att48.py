@@ -161,6 +161,15 @@ att_48_priorities = [
     2,  # 48 - Hospital Regional de Rio Claro      → Baixa
 ]
 
+# Postos de gasolina — coordenadas originais (mesma escala do benchmark att48)
+# 4 pontos estrategicamente distribuídos cobrindo os 4 quadrantes do mapa
+att_48_postos_gasolina = [
+    (1800, 1200),   # Posto Noroeste  — cobre região esquerda/cima
+    (6800, 1500),   # Posto Nordeste  — cobre região direita/cima
+    (3000, 3200),   # Posto Centro-Sul — cobre região central/baixo
+    (7200, 4300),   # Posto Sudeste   — cobre região direita/baixo
+]
+
 att_48_cities_order = [1,
 8,
 38,
