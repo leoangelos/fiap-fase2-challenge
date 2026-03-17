@@ -6,3 +6,4 @@ pandas
 openai
 yfinance
 python-dotenv
+reportlab

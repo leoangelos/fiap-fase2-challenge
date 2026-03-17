@@ -44,7 +44,7 @@ FPS = 30
 DESLOCAMENTO_X_GRAFICO = 450
 
 # Ativar relatório GPT
-RELATORIO_GPT = False
+RELATORIO_GPT = True
 
 # Parâmetros do Algoritmo Genético
 N_CIDADES = 48                          # Número de cidades Max 48
@@ -58,7 +58,7 @@ PESO_BALANCEAMENTO = 0.6                # Penalidade por desbalanceamento entre 
 # Priorização de Hospitais
 # Quando ativa, hospitais com prioridade alta são penalizados se aparecem
 # tarde na rota (longe do depósito na sequência de visitas).
-PRIORIDADE_ATIVA = False                  # True = ativa penalidade por prioridade
+PRIORIDADE_ATIVA = True                  # True = ativa penalidade por prioridade
 PESO_PRIORIDADE = 50.0                   # Peso da penalidade de prioridade no fitness
 # Pesos por nível: quanto maior o peso, mais o AG prioriza visitar cedo na rota.
 # Hospitais urgentes (prioridade 0) têm peso alto → AG é forçado a visitá-los primeiro.
@@ -87,7 +87,7 @@ VELOCIDADE_REF = 100    # km/h — converte horas em km-equivalente para normali
 
 # Frota Heterogênea — Tipos de Veículos
 N_CARROS = 4                            # Quantidade de carros
-N_MOTOS = 0                             # Quantidade de motos
+N_MOTOS = 2                             # Quantidade de motos
 N_VEICULOS = N_CARROS + N_MOTOS         # Total de veículos
 
 VELOCIDADE_CARRO = 100                   # km/h
@@ -96,7 +96,7 @@ AUTONOMIA_CARRO = 1200                   # km (precisa reabastecer na base)
 AUTONOMIA_MOTO = 400                    # km (precisa reabastecer na base)
 
 # Configuração de Operação
-REABASTECIMENTO_ATIVO = False             # Se False, veículos ganham autonomia infinita
+REABASTECIMENTO_ATIVO = True             # Se False, veículos ganham autonomia infinita
 CAPACIDADE_CARGA = True                  # Se True, veículos têm limite de cidades por viagem
 
 # Capacidade de carga (máximo de cidades visitadas antes de voltar ao depósito)
@@ -1279,8 +1279,8 @@ print(f"Balanço tempo: {round(min(tempos_resumo), 2)}h - {round(max(tempos_resu
 print(f"Total reabastecimentos: {sum(reab_resumo)}")
 
 if RELATORIO_GPT:
-    # === Agente OpenAI - Análise das Rotas ===
-    print("\n=== Enviando resultados para o agente ChatGPT... ===\n")
+    # === Agente OpenAI - Roteiro Individual por Motorista ===
+    print("\n=== Gerando roteiros individuais por motorista via ChatGPT... ===\n")
 
     from dotenv import load_dotenv
     from openai import OpenAI
@@ -1293,124 +1293,469 @@ if RELATORIO_GPT:
     else:
         client = OpenAI(api_key=api_key)
 
-        # Montar dados das rotas com nomes de hospitais e prioridades
-        _labels_prio = {0: 'ALTA', 1: 'MÉDIA', 2: 'BAIXA'}
-        descricao_rotas = ""
+        _labels_prio = {0: '🔴 ALTA', 1: '🟡 MÉDIA', 2: '🟢 BAIXA'}
+
+        # --- Montar roteiro detalhado passo a passo por veículo ---
+        # Usa os waypoints reais (inclui postos de reabastecimento e retornos ao depósito)
+        # para gerar um guia sequencial completo para cada motorista.
+        texto_roteiros = ""
         for idx, rota in enumerate(rotas_finais):
             v = VEICULOS[idx]
-            descricao_rotas += f"\n### {v['tipo']} Veículo {idx + 1} ({len(rota)} hospitais, "
-            descricao_rotas += f"dist_efetiva: {round(dist_ef_final[idx], 2)}km, "
-            descricao_rotas += f"tempo: {round(tempos_final[idx], 2)}h, "
-            descricao_rotas += f"paradas_extras: {reab_final[idx]})\n"
-            descricao_rotas += f"Autonomia: {v['autonomia']}km | Velocidade: {v['velocidade']}km/h"
-            if CAPACIDADE_CARGA:
-                descricao_rotas += f" | Capacidade de carga: {v.get('capacidade', '?')} cidades"
-            descricao_rotas += "\n"
-            descricao_rotas += f"Trajeto: Depósito → "
-            cidades_rota = []
-            for cidade in rota:
-                idx_cidade = localizacoes_cidades.index(cidade)
-                nome_hosp = att_48_hospitals[idx_cidade]
-                prio = _labels_prio.get(att_48_priorities[idx_cidade], '?')
-                cidades_rota.append(f"{nome_hosp} [Prioridade: {prio}]")
-            descricao_rotas += " → ".join(cidades_rota)
-            descricao_rotas += " → Depósito\n"
+            autonomia_v = v['autonomia']
+            capacidade_v = v.get('capacidade')
+            velocidade_v = v['velocidade']
 
-        # Info de prioridade para o prompt
-        prioridade_info = ""
+            waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, autonomia_v, capacidade_v)
+
+            cap_str = f" | Capacidade: {capacidade_v} entregas/viagem" if CAPACIDADE_CARGA and capacidade_v else ""
+            texto_roteiros += f"\n{'=' * 60}\n"
+            texto_roteiros += f"VEÍCULO {idx + 1} — {v['tipo'].upper()}\n"
+            texto_roteiros += f"Autonomia: {autonomia_v}km | Velocidade: {velocidade_v}km/h{cap_str}\n"
+            texto_roteiros += f"Total: {len(rota)} entregas | {round(dist_ef_final[idx], 2)}km | ~{round(tempos_final[idx], 2)}h\n"
+            texto_roteiros += f"{'=' * 60}\n"
+            texto_roteiros += "ROTEIRO DE PARADAS:\n\n"
+
+            dist_acum = 0.0
+            tempo_acum = 0.0
+            posto_num = 0
+            viagem_num = 1
+            entrega_num = 0
+            pos_prev = None
+
+            for wp_idx, (ponto, tipo) in enumerate(waypoints):
+                if wp_idx == 0:
+                    texto_roteiros += "  🏁  PARTIDA — Depósito Central\n"
+                    pos_prev = ponto
+                    continue
+
+                dist_seg = distancia_euclidiana(pos_prev, ponto)
+                dist_acum += dist_seg
+                tempo_acum += dist_seg / velocidade_v
+                pos_prev = ponto
+
+                if tipo == 'deposito':
+                    if wp_idx == len(waypoints) - 1:
+                        texto_roteiros += (
+                            f"  🏠  RETORNO FINAL ao Depósito Central"
+                            f" | +{round(dist_seg, 1)}km"
+                            f" | Total acumulado: {round(dist_acum, 1)}km"
+                            f" | Tempo estimado: ~{round(tempo_acum, 2)}h\n"
+                        )
+                    else:
+                        viagem_num += 1
+                        texto_roteiros += (
+                            f"  🔄  RETORNO AO DEPÓSITO para recarga de carga"
+                            f" (início da viagem {viagem_num})"
+                            f" | +{round(dist_seg, 1)}km"
+                            f" | Total acumulado: {round(dist_acum, 1)}km"
+                            f" | Tempo estimado: ~{round(tempo_acum, 2)}h\n"
+                        )
+                elif tipo == 'posto':
+                    posto_num += 1
+                    idx_posto = (POSTOS_GASOLINA.index(ponto) + 1) if ponto in POSTOS_GASOLINA else posto_num
+                    texto_roteiros += (
+                        f"  ⛽  PARADA OBRIGATÓRIA — Abastecimento no Posto #{idx_posto}"
+                        f" | +{round(dist_seg, 1)}km"
+                        f" | Total acumulado: {round(dist_acum, 1)}km"
+                        f" | Tempo estimado: ~{round(tempo_acum, 2)}h\n"
+                    )
+                else:  # 'cidade'
+                    entrega_num += 1
+                    idx_cidade = localizacoes_cidades.index(ponto)
+                    nome_hosp = att_48_hospitals[idx_cidade]
+                    prio = _labels_prio.get(att_48_priorities[idx_cidade], '?')
+                    alerta = "  ⚠️  ATENDA PRIMEIRO!" if att_48_priorities[idx_cidade] == 0 else ""
+                    texto_roteiros += (
+                        f"  📦  Entrega {entrega_num:02d} — {nome_hosp} [{prio}]{alerta}"
+                        f" | +{round(dist_seg, 1)}km"
+                        f" | Total acumulado: {round(dist_acum, 1)}km"
+                        f" | Tempo estimado: ~{round(tempo_acum, 2)}h\n"
+                    )
+
+            texto_roteiros += "\n"
+
+        # --- Contexto operacional para o prompt ---
+        contexto_op = []
         if PRIORIDADE_ATIVA:
-            prioridade_info = f"""
-## Priorização de Entregas
-- Sistema de prioridades ATIVO (peso no fitness: {PESO_PRIORIDADE})
-- Alta (🔴): deve ser visitado o mais cedo possível na rota
-- Média (🟡): penalidade moderada se visitado tarde
-- Baixa (🟢): sem penalidade extra
-"""
-        else:
-            prioridade_info = "\n## Priorização de Entregas\n- Sistema de prioridades DESATIVADO\n"
-
-        # Info de reabastecimento para o prompt
-        reabastecimento_info = ""
+            contexto_op.append(
+                "Sistema de PRIORIDADES ATIVO: hospitais 🔴 ALTA devem ser atendidos o mais cedo possível na rota."
+            )
         if REABASTECIMENTO_ATIVO:
-            reabastecimento_info = f"""
-## Reabastecimento em Postos de Gasolina
-- Sistema de reabastecimento ATIVO
-- {len(POSTOS_GASOLINA)} postos de gasolina distribuídos estrategicamente no mapa
-- O depósito NÃO é posto de gasolina
-- Veículos devem ir ao posto mais próximo antes que a autonomia acabe
-- É permitido voltar ao mesmo posto de gasolina mais de uma vez
-- Ao voltar ao depósito por limite de carga, o tanque também é reabastecido
-"""
-        else:
-            reabastecimento_info = "\n## Reabastecimento\n- Reabastecimento DESATIVADO (autonomia infinita)\n"
-
-        # Info de capacidade de carga para o prompt
-        capacidade_info = ""
+            contexto_op.append(
+                "Sistema de REABASTECIMENTO ATIVO: o motorista DEVE parar no posto indicado para abastecer "
+                "antes de prosseguir — ignorar essa parada pode deixar o veículo sem combustível."
+            )
         if CAPACIDADE_CARGA:
-            capacidade_info = f"""
-## Capacidade de Carga
-- Sistema de capacidade de carga ATIVO
-- Carro: máximo {CAPACIDADE_CARRO} cidades por viagem antes de voltar ao depósito
-- Moto: máximo {CAPACIDADE_MOTO} cidades por viagem antes de voltar ao depósito
-- Ao atingir o limite, o veículo retorna ao depósito para buscar mais itens
-"""
-        else:
-            capacidade_info = "\n## Capacidade de Carga\n- Capacidade de carga DESATIVADA (entregas ilimitadas por viagem)\n"
+            contexto_op.append(
+                "Sistema de CAPACIDADE DE CARGA ATIVO: ao atingir o limite de entregas por viagem, "
+                "o motorista DEVE retornar ao depósito para buscar mais itens antes de continuar."
+            )
+        contexto_str = "\n".join(f"- {c}" for c in contexto_op) if contexto_op else "- Operação padrão sem restrições adicionais."
 
-        prompt = f"""Você é um analista de logística especializado em otimização de rotas entre hospitais.
-Analise os resultados do problema mTSP (Multiple Travelling Salesman Problem) abaixo.
+        prompt = f"""Você é um assistente de logística responsável por preparar os roteiros de entrega para os motoristas de uma frota hospitalar.
 
-## Dados do Problema
-- Benchmark: ATT48 (48 hospitais)
-- Número de veículos: {N_VEICULOS} ({N_CARROS} carros + {N_MOTOS} motos)
-- Depósito (ponto de partida/chegada): ({att_48_cities_locations[0][0]}, {att_48_cities_locations[0][1]})
-- Algoritmo: Genético com heurística {'Vizinho Mais Próximo' if HEURISTICA == 1 else ('Convex Hull' if HEURISTICA == 2 else 'Aleatório')}
-- Objetivo: {OBJETIVO}
-- Gerações: {geracao}
-- Fitness final: {round(melhor_fitness_final, 2)}
-{prioridade_info}
-{reabastecimento_info}
-{capacidade_info}
-## Resultados das Rotas
-{descricao_rotas}
+Com base nos dados estruturados abaixo, escreva um roteiro claro, numerado e fácil de ler para cada motorista executar sua rota.
+Use linguagem direta e imperativa, como um GPS textual ("Siga para...", "Pare em...", "Retorne ao depósito...").
+O motorista não conhece o sistema — escreva como se fosse a única instrução que ele vai receber.
 
-## Estatísticas
-- Distância efetiva total: {round(distancia_total_real, 2)}km
-- Tempo total: {round(tempo_total, 2)}h
-- Desvio padrão entre tempos: {round(desvio_final, 2)}h
-- Diferença entre maior e menor tempo: {round(max(tempos_final) - min(tempos_final), 2)}h
-- Total de paradas extras (reabastecimentos + recargas): {sum(reab_final)}
+## Contexto da Operação
+- Data da rota: {timestamp[:10]}
+- Frota em operação: {N_VEICULOS} veículo(s) — {N_CARROS} carro(s) e {N_MOTOS} moto(s)
+- Ponto de partida e chegada: Depósito Central
+{contexto_str}
 
-## Instruções
-1. Descreva o trajeto de cada veículo de forma clara e objetiva, mencionando os nomes dos hospitais
-2. Analise o balanceamento das rotas (distâncias e tempos dos veículos estão equilibrados?)
-3. Analise se os hospitais de prioridade ALTA estão sendo visitados no início das rotas
-4. Se reabastecimento estiver ativo, comente sobre a eficiência das paradas em postos
-5. Se capacidade de carga estiver ativa, comente sobre os retornos ao depósito para recarga
-6. Dê uma nota de 1 a 10 para o balanceamento
-7. Dê uma nota de 1 a 10 para o atendimento das prioridades
-8. Sugira possíveis melhorias
+## Dados dos Roteiros
+{texto_roteiros}
 
-Responda em português brasileiro."""
+## Como formatar o roteiro de cada motorista
+Para cada veículo, produza um bloco independente contendo:
+
+1. **Cabeçalho**: número e tipo do veículo, autonomia, velocidade média e resumo da missão
+   (quantas entregas, distância total estimada, tempo total estimado)
+
+2. **Roteiro numerado passo a passo**: para cada parada, informe:
+   - Número da parada
+   - Tipo: Entrega 📦, Abastecimento ⛽, Retorno para recarga 🔄 ou Retorno final 🏠
+   - Nome exato do hospital ou descrição do ponto de parada
+   - Prioridade da entrega (se aplicável) — destaque com alerta os hospitais de prioridade 🔴 ALTA
+   - Distância parcial desde a parada anterior e distância total acumulada
+   - Tempo estimado acumulado desde a partida
+
+3. **Instruções especiais em destaque**:
+   - Para paradas de abastecimento ⛽: avise que o veículo DEVE abastecer — não é opcional
+   - Para retornos ao depósito 🔄: avise que o motorista deve buscar mais itens antes de continuar
+
+4. **Resumo final**: total de entregas realizadas, distância total percorrida e tempo total estimado
+
+Responda apenas com os roteiros, sem comentários adicionais ou análises, em português brasileiro."""
 
         try:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Você é um analista de logística especializado em otimização de rotas de veículos."},
+                    {"role": "system", "content": (
+                        "Você é um assistente de logística que prepara roteiros práticos e objetivos "
+                        "para motoristas de entrega em hospitais. Seja direto, claro e use linguagem imperativa."
+                    )},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
-                max_tokens=2000
+                temperature=0.4,
+                max_tokens=3500
             )
             resposta = response.choices[0].message.content
+
             print("=" * 60)
-            print("ANÁLISE DO AGENTE ChatGPT")
+            print("ROTEIROS DOS MOTORISTAS — GERADO POR ChatGPT")
             print("=" * 60)
             print(resposta)
             print("=" * 60)
+
+            # Salvar roteiros em arquivo de texto
+            nome_roteiro = f"rotas/roteiro_motoristas_{timestamp}.txt"
+            with open(nome_roteiro, 'w', encoding='utf-8') as f:
+                f.write("ROTEIROS DOS MOTORISTAS\n")
+                f.write(f"Gerado em: {timestamp}\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(resposta)
+            print(f"Roteiros salvos em: {nome_roteiro}")
+
         except Exception as e:
             print(f"Erro ao chamar a API OpenAI: {e}")
+
+        # --- Gerar PDF com roteiro imprimível por motorista ---
+        # Gerado a partir dos dados estruturados (independente do resultado do GPT)
+        try:
+            import html
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import (
+                SimpleDocTemplate, Table, TableStyle,
+                Paragraph, Spacer, PageBreak, HRFlowable
+            )
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+
+            PAGE_W = A4[0] - 3 * cm   # usable width (1.5cm margin each side)
+            _COL_W = [0.7*cm, 2.3*cm, 7.5*cm, 1.9*cm, 1.7*cm, 2.0*cm, 1.9*cm]  # total ≈ 18cm
+
+            # Cores por tipo de linha
+            COR_ALTA      = colors.HexColor('#FFEBEE')
+            COR_MEDIA     = colors.HexColor('#FFF8E1')
+            COR_BAIXA     = colors.HexColor('#F1F8E9')
+            COR_POSTO     = colors.HexColor('#FFF9C4')
+            COR_DEPOSITO  = colors.HexColor('#E3F2FD')
+            COR_HEADER    = colors.HexColor('#1A237E')
+            COR_CARRO     = colors.HexColor('#1565C0')
+            COR_MOTO      = colors.HexColor('#E65100')
+
+            def _s(text, size=8, bold=False, color=None, align='LEFT'):
+                """Cria um Paragraph simples com estilo embutido."""
+                font = 'Helvetica-Bold' if bold else 'Helvetica'
+                col = color if color else '#000000'
+                alignment = TA_CENTER if align == 'CENTER' else (TA_RIGHT if align == 'RIGHT' else 0)
+                return Paragraph(
+                    html.escape(str(text)),
+                    ParagraphStyle('_', fontName=font, fontSize=size,
+                                   textColor=colors.HexColor(col),
+                                   alignment=alignment, leading=size + 2)
+                )
+
+            nome_pdf = f"rotas/roteiro_motoristas_{timestamp}.pdf"
+            doc = SimpleDocTemplate(
+                nome_pdf, pagesize=A4,
+                rightMargin=1.5*cm, leftMargin=1.5*cm,
+                topMargin=1.5*cm, bottomMargin=1.5*cm
+            )
+
+            elementos_pdf = []
+
+            # ── Capa do lote ──────────────────────────────────────────────
+            elementos_pdf.append(
+                Paragraph('ROTEIROS DE ENTREGA', ParagraphStyle(
+                    'capa', fontName='Helvetica-Bold', fontSize=22,
+                    textColor=COR_HEADER, spaceAfter=4))
+            )
+            elementos_pdf.append(
+                Paragraph(
+                    f'Data: {timestamp[:10]}   |   '
+                    f'Frota: {N_VEICULOS} veiculo(s)   |   '
+                    f'{len(rotas_finais[0]) + sum(len(r) for r in rotas_finais[1:])} hospitais no total',
+                    ParagraphStyle('sub', fontName='Helvetica', fontSize=9,
+                                   textColor=colors.HexColor('#555555'), spaceAfter=6))
+            )
+            elementos_pdf.append(HRFlowable(width='100%', thickness=2, color=COR_HEADER, spaceAfter=10))
+
+            # ── Um bloco por veículo ──────────────────────────────────────
+            _labels_prio_pdf = {0: 'ALTA', 1: 'MEDIA', 2: 'BAIXA'}
+
+            for idx, rota in enumerate(rotas_finais):
+                v = VEICULOS[idx]
+                autonomia_v  = v['autonomia']
+                capacidade_v = v.get('capacidade')
+                velocidade_v = v['velocidade']
+                cor_v = COR_CARRO if 'Carro' in v['tipo'] else COR_MOTO
+
+                waypoints = construir_waypoints_reabastecimento(rota, DEPOSITO, autonomia_v, capacidade_v)
+
+                # Cabeçalho do veículo
+                cap_str = f"  |  Cap.: {capacidade_v} entr./viagem" if CAPACIDADE_CARGA and capacidade_v else ''
+                cab_dados = [[
+                    Paragraph(
+                        f"<b>VEICULO {idx+1} — {html.escape(v['tipo'].upper())}</b>",
+                        ParagraphStyle('ch', fontName='Helvetica-Bold', fontSize=14,
+                                       textColor=colors.white, leading=16)
+                    ),
+                    Paragraph(
+                        f"<b>{len(rota)} entregas  |  {round(dist_ef_final[idx],1)} km  |  ~{round(tempos_final[idx],2)} h</b>",
+                        ParagraphStyle('ch2', fontName='Helvetica-Bold', fontSize=10,
+                                       textColor=colors.white, alignment=TA_RIGHT, leading=12)
+                    ),
+                ]]
+                tabela_cab = Table(cab_dados, colWidths=[PAGE_W * 0.6, PAGE_W * 0.4])
+                tabela_cab.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), cor_v),
+                    ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+                    ('LEFTPADDING',  (0, 0), (-1, -1), 10),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+                    ('TOPPADDING',   (0, 0), (-1, -1), 8),
+                    ('BOTTOMPADDING',(0, 0), (-1, -1), 8),
+                ]))
+                elementos_pdf.append(tabela_cab)
+                elementos_pdf.append(
+                    Paragraph(
+                        f'Autonomia: {autonomia_v} km  |  Velocidade media: {velocidade_v} km/h'
+                        f'{html.escape(cap_str)}  |  Paradas extras: {reab_final[idx]}',
+                        ParagraphStyle('info', fontName='Helvetica', fontSize=8,
+                                       textColor=colors.HexColor('#444444'),
+                                       spaceBefore=3, spaceAfter=5)
+                    )
+                )
+
+                # Cabeçalho da tabela de paradas
+                header_row = [
+                    _s('#',       bold=True, color='#FFFFFF', align='CENTER'),
+                    _s('TIPO',    bold=True, color='#FFFFFF', align='CENTER'),
+                    _s('DESTINO / ACAO',  bold=True, color='#FFFFFF'),
+                    _s('PRIORIDADE',      bold=True, color='#FFFFFF', align='CENTER'),
+                    _s('+KM',     bold=True, color='#FFFFFF', align='RIGHT'),
+                    _s('KM TOTAL',bold=True, color='#FFFFFF', align='RIGHT'),
+                    _s('TEMPO',   bold=True, color='#FFFFFF', align='RIGHT'),
+                ]
+                dados_tabela = [header_row]
+                estilos_linhas = [
+                    ('BACKGROUND', (0, 0), (-1, 0), COR_HEADER),
+                    ('LINEBELOW',  (0, 0), (-1, 0), 1, COR_HEADER),
+                ]
+
+                dist_acum = 0.0
+                tempo_acum = 0.0
+                viagem_num = 1
+                entrega_num = 0
+                posto_num = 0
+                pos_prev = None
+
+                for wp_idx, (ponto, tipo) in enumerate(waypoints):
+                    row_i = len(dados_tabela)  # real row index in table (for TableStyle)
+
+                    if wp_idx == 0:
+                        pos_prev = ponto
+                        dados_tabela.append([
+                            _s('—', align='CENTER'),
+                            _s('PARTIDA', bold=True),
+                            _s('Deposito Central'),
+                            _s('—', align='CENTER'),
+                            _s('—', align='RIGHT'),
+                            _s('0,0 km', align='RIGHT'),
+                            _s('0,00 h', align='RIGHT'),
+                        ])
+                        estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_DEPOSITO))
+                        continue
+
+                    dist_seg   = distancia_euclidiana(pos_prev, ponto)
+                    dist_acum += dist_seg
+                    tempo_acum += dist_seg / velocidade_v
+                    pos_prev   = ponto
+
+                    if tipo == 'deposito':
+                        if wp_idx == len(waypoints) - 1:
+                            dados_tabela.append([
+                                _s('—', align='CENTER'),
+                                _s('CHEGADA', bold=True),
+                                _s('Deposito Central — FIM DA ROTA'),
+                                _s('—', align='CENTER'),
+                                _s(f'{round(dist_seg,1)} km', align='RIGHT'),
+                                _s(f'{round(dist_acum,1)} km', align='RIGHT'),
+                                _s(f'{round(tempo_acum,2)} h', align='RIGHT'),
+                            ])
+                            estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_DEPOSITO))
+                        else:
+                            viagem_num += 1
+                            dados_tabela.append([
+                                _s('—', align='CENTER'),
+                                _s('RECARREGAR', bold=True, color='#BF360C'),
+                                _s(f'Retorne ao Deposito — buscar itens (viagem {viagem_num})'),
+                                _s('—', align='CENTER'),
+                                _s(f'{round(dist_seg,1)} km', align='RIGHT'),
+                                _s(f'{round(dist_acum,1)} km', align='RIGHT'),
+                                _s(f'{round(tempo_acum,2)} h', align='RIGHT'),
+                            ])
+                            estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), colors.HexColor('#FFE0B2')))
+                            estilos_linhas.append(('FONTNAME', (0, row_i), (-1, row_i), 'Helvetica-Bold'))
+
+                    elif tipo == 'posto':
+                        posto_num += 1
+                        idx_posto = (POSTOS_GASOLINA.index(ponto) + 1) if ponto in POSTOS_GASOLINA else posto_num
+                        dados_tabela.append([
+                            _s('—', align='CENTER'),
+                            _s('ABASTECER', bold=True, color='#F57F17'),
+                            _s(f'Posto de Gasolina #{idx_posto} — OBRIGATORIO abastecer'),
+                            _s('—', align='CENTER'),
+                            _s(f'{round(dist_seg,1)} km', align='RIGHT'),
+                            _s(f'{round(dist_acum,1)} km', align='RIGHT'),
+                            _s(f'{round(tempo_acum,2)} h', align='RIGHT'),
+                        ])
+                        estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_POSTO))
+                        estilos_linhas.append(('FONTNAME', (0, row_i), (-1, row_i), 'Helvetica-Bold'))
+
+                    else:  # cidade
+                        entrega_num += 1
+                        idx_cidade = localizacoes_cidades.index(ponto)
+                        nome_hosp  = att_48_hospitals[idx_cidade]
+                        prio_num   = att_48_priorities[idx_cidade] if PRIORIDADE_ATIVA else 2
+                        prio_str   = _labels_prio_pdf.get(prio_num, '?')
+
+                        alerta_txt = f'{nome_hosp}  *** ATENDER IMEDIATAMENTE ***' if prio_num == 0 else nome_hosp
+                        dados_tabela.append([
+                            _s(str(entrega_num), bold=(prio_num == 0), align='CENTER'),
+                            _s('ENTREGA', bold=(prio_num == 0)),
+                            _s(alerta_txt, bold=(prio_num == 0)),
+                            _s(prio_str, bold=(prio_num == 0), align='CENTER'),
+                            _s(f'{round(dist_seg,1)} km', align='RIGHT'),
+                            _s(f'{round(dist_acum,1)} km', align='RIGHT'),
+                            _s(f'{round(tempo_acum,2)} h', align='RIGHT'),
+                        ])
+                        if prio_num == 0:
+                            estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_ALTA))
+                            estilos_linhas.append(('FONTNAME',   (0, row_i), (-1, row_i), 'Helvetica-Bold'))
+                        elif prio_num == 1:
+                            estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_MEDIA))
+                        else:
+                            estilos_linhas.append(('BACKGROUND', (0, row_i), (-1, row_i), COR_BAIXA))
+
+                # Montar tabela de paradas
+                tabela_paradas = Table(dados_tabela, colWidths=_COL_W, repeatRows=1)
+                estilo_tabela = TableStyle([
+                    ('FONTSIZE',      (0, 0), (-1, -1), 8),
+                    ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+                    ('GRID',          (0, 0), (-1, -1), 0.25, colors.HexColor('#CCCCCC')),
+                    ('LINEBELOW',     (0, 0), (-1, 0), 1.2, COR_HEADER),
+                    ('ROWBACKGROUNDS',(0, 1), (-1, -1), [colors.white, colors.HexColor('#FAFAFA')]),
+                ])
+                for est in estilos_linhas:
+                    estilo_tabela.add(*est)
+                tabela_paradas.setStyle(estilo_tabela)
+                elementos_pdf.append(tabela_paradas)
+
+                # Legenda de cores
+                elementos_pdf.append(Spacer(1, 0.25*cm))
+                legenda_dados = [[
+                    Paragraph('<b>Legenda:</b>', ParagraphStyle('lg', fontName='Helvetica-Bold', fontSize=7)),
+                    Paragraph('Prioridade ALTA', ParagraphStyle('lg', fontName='Helvetica', fontSize=7, backColor=COR_ALTA)),
+                    Paragraph('Prioridade MEDIA', ParagraphStyle('lg', fontName='Helvetica', fontSize=7, backColor=COR_MEDIA)),
+                    Paragraph('Prioridade BAIXA', ParagraphStyle('lg', fontName='Helvetica', fontSize=7, backColor=COR_BAIXA)),
+                    Paragraph('Abastecer', ParagraphStyle('lg', fontName='Helvetica', fontSize=7, backColor=COR_POSTO)),
+                    Paragraph('Deposito', ParagraphStyle('lg', fontName='Helvetica', fontSize=7, backColor=COR_DEPOSITO)),
+                ]]
+                tabela_leg = Table(legenda_dados, colWidths=[2*cm, 2.8*cm, 2.8*cm, 2.8*cm, 2.0*cm, 1.8*cm])
+                tabela_leg.setStyle(TableStyle([
+                    ('FONTSIZE',      (0, 0), (-1, -1), 7),
+                    ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                    ('BACKGROUND',    (1, 0), (1, 0), COR_ALTA),
+                    ('BACKGROUND',    (2, 0), (2, 0), COR_MEDIA),
+                    ('BACKGROUND',    (3, 0), (3, 0), COR_BAIXA),
+                    ('BACKGROUND',    (4, 0), (4, 0), COR_POSTO),
+                    ('BACKGROUND',    (5, 0), (5, 0), COR_DEPOSITO),
+                    ('BOX',           (1, 0), (-1, 0), 0.3, colors.HexColor('#AAAAAA')),
+                ]))
+                elementos_pdf.append(tabela_leg)
+
+                # Resumo do veículo
+                elementos_pdf.append(Spacer(1, 0.2*cm))
+                resumo_dados = [[
+                    _s(f'RESUMO: {len(rota)} entregas realizadas  |  '
+                       f'Distancia total: {round(dist_ef_final[idx], 1)} km  |  '
+                       f'Tempo estimado: ~{round(tempos_final[idx], 2)} h  |  '
+                       f'Paradas extras: {reab_final[idx]}',
+                       bold=True, size=8)
+                ]]
+                tabela_resumo = Table(resumo_dados, colWidths=[PAGE_W])
+                tabela_resumo.setStyle(TableStyle([
+                    ('BACKGROUND',    (0, 0), (-1, -1), colors.HexColor('#EEEEEE')),
+                    ('TOPPADDING',    (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                    ('LEFTPADDING',   (0, 0), (-1, -1), 8),
+                    ('BOX',           (0, 0), (-1, -1), 0.5, COR_HEADER),
+                ]))
+                elementos_pdf.append(tabela_resumo)
+
+                if idx < len(rotas_finais) - 1:
+                    elementos_pdf.append(PageBreak())
+
+            doc.build(elementos_pdf)
+            print(f"PDF dos roteiros salvo: {nome_pdf}")
+
+        except ImportError:
+            print("AVISO: reportlab nao instalado. Execute: pip install reportlab")
+        except Exception as e_pdf:
+            print(f"Erro ao gerar PDF: {e_pdf}")
 
 else:
     print("Relatório GPT desativado.")
